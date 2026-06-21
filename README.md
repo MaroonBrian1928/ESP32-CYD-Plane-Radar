@@ -4,7 +4,9 @@
 
 **3D printed case (STL + assembly):** [MakerWorld](https://makerworld.com/en/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display#profileId-3207083) · **Firmware:** [Releases](https://github.com/MatixYo/ESP32-Plane-Radar/releases)
 
-Firmware for an **ESP32-C3 Super Mini** and a **1.28″ round GC9A01** display (240×240). Shows a circular **ADS-B radar** around your configured location, with **WiFiManager** for first-time setup.
+Firmware for the **Cheap Yellow Display (ESP32-2432S028R)** — an ESP32-WROOM with a **2.8″ 320×240 ST7789/ILI9341** panel and **XPT2046 resistive touch**. Shows a circular **ADS-B radar** around your configured location, centered on the landscape screen, with **WiFiManager** for first-time setup.
+
+> **Note:** this is a CYD port. The original project targets an **ESP32-C3 Super Mini** with a 1.28″ round GC9A01 (240×240) — see [MatixYo/ESP32-Plane-Radar](https://github.com/MatixYo/ESP32-Plane-Radar) for that hardware.
 
 ## What it does
 
@@ -13,14 +15,16 @@ Firmware for an **ESP32-C3 Super Mini** and a **1.28″ round GC9A01** display (
 
 After Wi‑Fi is saved, the device reconnects automatically; the radar runs in the main loop with periodic ADS-B updates (~5 s).
 
-## Controls (BOOT, GPIO 9, active LOW)
+## Controls
+
+The **BOOT** button (GPIO 0, active LOW) and the **touchscreen** both drive the UI:
 
 | Action | Effect |
 |--------|--------|
-| **Short tap** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
-| **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
+| **Tap screen** *or* **short tap BOOT** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
+| **Hold BOOT 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
 
-During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
+During setup you can also hold BOOT at power-on to force a credential reset (same as the long press). Any spot on the screen counts as a tap — no calibration needed for cycling range.
 
 ## Wi‑Fi setup portal
 
@@ -52,8 +56,9 @@ After a reset, the device reboots and shows the setup screen immediately (no “
 ### Grid
 
 - Dark blue background, subdued green rings and crosshairs
-- White **N / S / E / W** at the bezel; range label on the **east** spoke (ring 3 = ¾ of outer radius)
-- White center dot
+- The circular grid is **centered on the 320×240 landscape screen**; the extra width is used for aircraft, tags, and the **E / W** labels in the side margins (**N / S** at top/bottom)
+- Range label on the **east** spoke (ring 3 = ¾ of outer radius); white center dot
+- Beyond-range direction dots project onto the **rectangular** screen border, so they reach the corners
 
 Layout and colors: `include/ui/radar_theme.h`.
 
@@ -97,12 +102,19 @@ Edit **`include/config.h`** for hardware and behavior:
 |------|----------------|
 | Portal | `kPortalApName`, `kPortalIp`, `kPortalHostname` / `kPortalHostUrl` (mDNS; needs `-DWM_MDNS` in `platformio.ini`) |
 | Wi‑Fi timing | connect attempts, reconnect grace, portal timeout (`0` = no timeout) |
-| BOOT | `kBootPin`, `kBootResetHoldMs`, `kBootTapMinMs` |
-| Display SPI | pins, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz` |
+| BOOT | `kBootPin` (GPIO 0), `kBootResetHoldMs`, `kBootTapMinMs` |
+| Display SPI | `kDisplayPin*`, `kDisplayPinBacklight`, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz` |
+| Touch (XPT2046) | `kTouchPinSclk/Mosi/Miso/Cs/Irq` (separate SPI bus) |
 | Default location | `kDefaultRadarLat`, `kDefaultRadarLon` (until portal overrides) |
 | ADS-B | `kAdsbFetchIntervalMs`, `kAdsbShowGroundAircraft` |
 
 Range presets: `include/ui/radar_range.h` (`kRangePresets`).
+
+**Display tweaks (CYD panel variants).** Defaults match the dual-USB CYD (ST7789, BGR, inversion off). If the first flash looks wrong:
+
+- Image looks like a photo **negative** → flip `kDisplayInvert` in `config.h`
+- **Reds/blues swapped** → flip `kDisplayRgbOrder`
+- Panel is an **ILI9341** variant, not ST7789 → swap `lgfx::Panel_ST7789` for `lgfx::Panel_ILI9341` in `include/hardware/lgfx_config.hpp`
 
 ## Project layout
 
@@ -129,6 +141,8 @@ data/
   ui_font.vlw              — embedded smooth UI font (Noto Sans Bold)
 scripts/
   build_large_airports.py
+  flash.sh                 — build + upload over USB serial (no sudo)
+  merge-firmware.sh        — single web-flashable .bin
 src/
   main.cpp
   data/
@@ -138,33 +152,48 @@ src/
   services/
 ```
 
-## Wiring (GC9A01 ↔ ESP32-C3 Super Mini)
+## Wiring (CYD / ESP32-2432S028R)
 
-| Display | ESP32-C3 |
-|---------|----------|
-| VCC | 3V3 |
-| GND | GND |
-| RST | GPIO **0** |
-| CS | GPIO **1** |
-| DC | GPIO **10** |
-| SDA (MOSI) | GPIO **3** |
-| SCL (SCLK) | GPIO **4** |
-| BOOT (user) | GPIO **9** |
+The CYD is a self-contained board — the display, touch panel, backlight, and BOOT button are already wired. These are the pins the firmware uses (in `config.h`); no external wiring is needed:
+
+| Function | ESP32 GPIO |
+|----------|------------|
+| Display SCLK | **14** |
+| Display MOSI | **13** |
+| Display MISO | **12** |
+| Display CS | **15** |
+| Display DC | **2** |
+| Display RST | tied to EN (−1) |
+| Backlight | **21** |
+| Touch SCLK | **25** |
+| Touch MOSI | **32** |
+| Touch MISO | **39** |
+| Touch CS | **33** |
+| Touch IRQ | **36** |
+| BOOT (user button) | **0** |
 
 ## Build
 
 ```bash
-pio run -t upload
+pio run -e cyd -t upload
 pio device monitor
 ```
 
-- PlatformIO env: **`supermini`**
+Or use the helper (auto-detects `pio`, checks the serial port, no sudo):
+
+```bash
+chmod +x scripts/flash.sh            # once
+PORT=/dev/ttyUSB0 scripts/flash.sh   # build + upload firmware
+scripts/flash.sh monitor             # open the serial monitor
+```
+
+- PlatformIO env: **`cyd`** (board `esp32dev`)
 - Serial: **115200** baud
-- USB CDC on boot enabled in `platformio.ini` for the Super Mini
+- The UI font is embedded in the firmware (`board_build.embed_files`), so there is **no separate SPIFFS/`uploadfs` step** — one firmware upload is all you need
 
 ### Web-flashable release image
 
-Single `.bin` for [esptool-js](https://espressif.github.io/esptool-js/) and similar tools (ESP32-C3, 4 MB, flash at **0x0**):
+Single `.bin` for [esptool-js](https://espressif.github.io/esptool-js/) and similar tools (ESP32, 4 MB, flash at **0x0**):
 
 ```bash
 chmod +x scripts/merge-firmware.sh   # once
@@ -177,11 +206,11 @@ Writes `release/plane-radar-merged.bin`. Skip rebuild if firmware is already bui
 ./scripts/merge-firmware.sh --no-build
 ```
 
-Or via PlatformIO only (output: `.pio/build/supermini/firmware-merged.bin`):
+Or via PlatformIO only (output: `.pio/build/cyd/firmware-merged.bin`):
 
 ```bash
-pio run -e supermini
-pio run -t merge -e supermini
+pio run -e cyd
+pio run -t merge -e cyd
 ```
 
 Put the board in download mode (hold **BOOT**, tap **RESET**), then flash with Chrome/Edge over USB.
@@ -190,7 +219,7 @@ Put the board in download mode (hold **BOOT**, tap **RESET**), then flash with C
 
 | Workflow | When | Output |
 |----------|------|--------|
-| [Build](.github/workflows/build.yml) | Push / PR to `main` | Artifact `plane-radar-supermini` (merged + split `.bin` files, ~90 days) |
+| [Build](.github/workflows/build.yml) | Push / PR to `main` | Artifact `plane-radar-cyd` (merged + split `.bin` files, ~90 days) |
 | [Release](.github/workflows/release.yml) | Git tag `v*` (e.g. `v1.0.0`) | GitHub Release asset `plane-radar-v1.0.0.bin` + `.sha256` |
 
 To ship a version users can download:
@@ -200,7 +229,7 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The release workflow builds firmware in CI and attaches the merged image to the release. Download from **Releases** on GitHub, then flash at **0x0** (ESP32-C3, 4 MB).
+The release workflow builds firmware in CI and attaches the merged image to the release. Download from **Releases** on GitHub, then flash at **0x0** (ESP32, 4 MB).
 
 ## Dependencies
 

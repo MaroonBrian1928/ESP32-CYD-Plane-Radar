@@ -4,11 +4,16 @@
 
 namespace ui::radar {
 
-constexpr int kSize = 240;
-constexpr int kCenterX = kSize / 2;
-constexpr int kCenterY = kSize / 2;
+// Full landscape panel on the CYD (320×240). The sonar grid stays circular and
+// is centered on the screen; the extra width is used for aircraft, tags, and
+// the E/W labels that now sit in the side margins.
+constexpr int kScreenWidth = 320;
+constexpr int kScreenHeight = 240;
 
-/** Outermost grid ring (inside edge labels). */
+constexpr int kCenterX = kScreenWidth / 2;
+constexpr int kCenterY = kScreenHeight / 2;
+
+/** Outermost grid ring (inside edge labels); sized to the 240 px screen height. */
 constexpr int kGridOuterRadius = 107;
 
 /** N: offset from top edge (top_center, negative = up). */
@@ -35,6 +40,8 @@ constexpr int kCenterDotRadius = 2;
 constexpr int kAircraftNoseLenPx = 8;
 constexpr int kAircraftTailLenPx = 3;
 constexpr int kAircraftTailHalfPx = 4;
+/** Helicopters (ADS-B category A7) draw as a filled circle of this radius. */
+constexpr int kHeliMarkerRadiusPx = 4;
 /** Track vector: ground distance covered in this many seconds at current gs. */
 constexpr float kAircraftTrackHorizonSec = 60.0f;
 /** Minimum visible vector when gs > 0 (px). */
@@ -63,9 +70,9 @@ constexpr int kBeyondRingScreenMarginPx = 2;
 constexpr int kAircraftTagLabelHeightPx = 13;
 
 /** RGB565 palette targets (applied in initPalette). */
-constexpr uint8_t kBgR = 4;
-constexpr uint8_t kBgG = 10;
-constexpr uint8_t kBgB = 28;
+constexpr uint8_t kBgR = 0;  // true black background
+constexpr uint8_t kBgG = 0;
+constexpr uint8_t kBgB = 0;
 constexpr uint8_t kGridR = 16;
 constexpr uint8_t kGridG = 100;
 constexpr uint8_t kGridB = 32;

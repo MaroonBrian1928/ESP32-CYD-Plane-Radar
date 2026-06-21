@@ -18,12 +18,24 @@
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
 
+// Optional dev-time pre-seed (git-ignored). See include/secrets.example.h.
+#if defined(__has_include)
+#  if __has_include("secrets.h")
+#    include "secrets.h"
+#  endif
+#endif
+#if defined(PLANE_RADAR_WIFI_SSID) && !defined(PLANE_RADAR_WIFI_PASS)
+#  define PLANE_RADAR_WIFI_PASS ""
+#endif
+
 portMUX_TYPE s_boot_mux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool s_boot_tap_pending = false;
 volatile bool s_boot_is_down = false;
 volatile unsigned long s_boot_down_ms = 0;
 bool s_long_press_handled = false;
 bool s_boot_interrupt_attached = false;
+/** Arm hold-to-reset only after BOOT is seen released once (see poll fn). */
+bool s_boot_seen_released = false;
 
 void IRAM_ATTR onBootButtonIsr() {
   const bool down = digitalRead(config::kBootPin) == LOW;
@@ -68,8 +80,12 @@ void stopLanWebPortal();
 bool wifiLinkUp();
 
 constexpr int kCoordParamLen = 20;
+// Plain decimal text input (mobile shows a numeric keypad) instead of
+// type="number": the latter makes browsers reject values that aren't exact
+// multiples of `step`, popping a vague "please enter a valid value" with no
+// indication of which field. The firmware validates lat/lon itself.
 constexpr char kCoordInputAttrs[] =
-    " type=\"number\" step=\"0.000001\"";
+    " type=\"text\" inputmode=\"decimal\"";
 
 WiFiManagerParameter s_param_lat("radar_lat", "Latitude (deg)", "0",
                                 kCoordParamLen, kCoordInputAttrs);
@@ -327,6 +343,19 @@ bool connectSavedNetwork(bool show_ui) {
   return tryConnectWithUi(ssid, pass, show_ui);
 }
 
+// Connect using credentials baked in via secrets.h, if present. A successful
+// WiFi.begin() persists the SSID/pass to NVS, so subsequent boots reconnect
+// through the normal saved-credentials path even without secrets.h.
+bool connectFromSecrets(bool show_ui) {
+#ifdef PLANE_RADAR_WIFI_SSID
+  Serial.println("Trying WiFi credentials from secrets.h");
+  return tryConnectWithUi(PLANE_RADAR_WIFI_SSID, PLANE_RADAR_WIFI_PASS, show_ui);
+#else
+  (void)show_ui;
+  return false;
+#endif
+}
+
 bool openConfigPortal() {
   stopLanWebPortal();
   WiFi.disconnect(true);
@@ -377,6 +406,21 @@ bool bootButtonConsumeTap() {
 }
 
 void bootButtonPollLongPress() {
+  // GPIO0 is the CYD's BOOT pin, but it's also driven by the USB auto-program
+  // circuit: while tethered to a host it can sit LOW at power-on, which would
+  // otherwise look like a held button and wipe Wi-Fi on every boot (a reset
+  // loop that blocks first-time setup). So only arm the hold-to-reset after the
+  // button has been observed RELEASED at least once.
+  if (!s_boot_seen_released) {
+    if (!wifiBootButtonPressed()) {
+      s_boot_seen_released = true;
+    }
+    portENTER_CRITICAL(&s_boot_mux);
+    s_boot_is_down = false;
+    portEXIT_CRITICAL(&s_boot_mux);
+    return;
+  }
+
   if (wifiBootButtonPressed()) {
     portENTER_CRITICAL(&s_boot_mux);
     if (!s_boot_is_down) {
@@ -454,6 +498,20 @@ bool wifiSetupConnect() {
     return false;
   }
 
+#if defined(PLANE_RADAR_FORCE_SECRETS) && defined(PLANE_RADAR_WIFI_SSID)
+  // Force-override: drop saved Wi-Fi and reconnect from secrets.h, recovering
+  // from corrupted/stale stored credentials. A successful connect re-persists
+  // them, so this sticks after the force flag is removed.
+  Serial.println("WiFi: forcing credentials from secrets.h");
+  eraseWifiCredentials();
+  if (connectFromSecrets(true) && wifiLinkUp()) {
+    WiFi.setAutoReconnect(true);
+    Serial.printf("Connected (secrets.h, forced): %s  IP %s\n",
+                  WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    return true;
+  }
+#endif
+
   Serial.println("Connecting to WiFi (portal opens if needed)...");
 
   if (wifiLinkUp()) {
@@ -466,6 +524,13 @@ bool wifiSetupConnect() {
   if (storedWifiCredentials() && connectSavedNetwork(true)) {
     WiFi.setAutoReconnect(true);
     Serial.printf("Connected: %s  IP %s\n", WiFi.SSID().c_str(),
+                  WiFi.localIP().toString().c_str());
+    return true;
+  }
+
+  if (connectFromSecrets(true) && wifiLinkUp()) {
+    WiFi.setAutoReconnect(true);
+    Serial.printf("Connected (secrets.h): %s  IP %s\n", WiFi.SSID().c_str(),
                   WiFi.localIP().toString().c_str());
     return true;
   }

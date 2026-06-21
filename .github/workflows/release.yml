@@ -41,8 +41,8 @@ jobs:
 
       - name: Build and merge
         run: |
-          pio run -e supermini
-          pio run -t merge -e supermini
+          pio run -e cyd
+          pio run -t merge -e cyd
 
       - name: Package release files
         run: |
@@ -51,7 +51,7 @@ jobs:
             VERSION="manual-${GITHUB_SHA::7}"
           fi
           mkdir -p dist
-          cp .pio/build/supermini/firmware-merged.bin "dist/plane-radar-${VERSION}.bin"
+          cp .pio/build/cyd/firmware-merged.bin "dist/plane-radar-${VERSION}.bin"
           sha256sum "dist/plane-radar-${VERSION}.bin" > "dist/plane-radar-${VERSION}.bin.sha256"
           echo "version=${VERSION}" >> "$GITHUB_ENV"
 

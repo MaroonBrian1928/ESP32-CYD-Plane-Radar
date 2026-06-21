@@ -41,18 +41,18 @@ jobs:
         run: python3 scripts/build_large_airports.py --check
 
       - name: Build
-        run: pio run -e supermini
+        run: pio run -e cyd
 
       - name: Merge web-flash image
-        run: pio run -t merge -e supermini
+        run: pio run -t merge -e cyd
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: plane-radar-supermini
+          name: plane-radar-cyd
           if-no-files-found: error
           path: |
-            .pio/build/supermini/firmware-merged.bin
-            .pio/build/supermini/firmware.bin
-            .pio/build/supermini/bootloader.bin
-            .pio/build/supermini/partitions.bin
+            .pio/build/cyd/firmware-merged.bin
+            .pio/build/cyd/firmware.bin
+            .pio/build/cyd/bootloader.bin
+            .pio/build/cyd/partitions.bin

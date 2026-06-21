@@ -20,6 +20,7 @@ bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
 unsigned long g_last_adsb_fetch_ms = 0;
+unsigned long g_last_anim_ms = 0;
 
 void showRadarIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -44,7 +45,9 @@ void onRangeTap() {
 
 void handleBootButton() {
   bootButtonPollLongPress();
-  if (bootButtonConsumeTap()) {
+  // A BOOT tap or a screen tap both cycle the range preset; the BOOT long-press
+  // still clears Wi-Fi (handled in bootButtonPollLongPress()).
+  if (bootButtonConsumeTap() || displayTouchConsumeTap()) {
     onRangeTap();
   }
 }
@@ -70,6 +73,7 @@ void setup() {
 
   bootButtonInit();
   displayInit();
+  ui::radarDisplayInit();  // reserve the frame buffer before Wi-Fi fragments the heap
   if (wifiShowsSetupScreenOnBoot()) {
     statusScreenPortal();
   }
@@ -109,9 +113,16 @@ void loop() {
     g_wifi_down_since = 0;
     if (!g_radar_visible) {
       showRadarIfConnected();
+      g_last_anim_ms = millis();
     } else if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
       g_last_adsb_fetch_ms = millis();
       fetchAndDrawAircraft();
+      g_last_anim_ms = millis();
+    } else if (millis() - g_last_anim_ms >= config::kRadarAnimFrameMs) {
+      // In-between frames: redraw with dead-reckoned positions so aircraft glide
+      // instead of snapping on each fetch.
+      g_last_anim_ms = millis();
+      ui::radarDisplayRefreshAircraft();
     }
   }
 

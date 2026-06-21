@@ -15,12 +15,21 @@ namespace {
 
 constexpr char kApiBase[] = "https://opendata.adsb.fi/api/v3/lat/";
 constexpr float kKmPerNm = 1.852f;
-constexpr int kConnectAttemptMs = 200;
+constexpr int kConnectTimeoutMs = 8000;  // allow time for the TLS handshake
 constexpr unsigned long kRequestTimeoutMs = 10000;
 
 Aircraft s_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
+unsigned long s_last_update_ms = 0;
 PollFn s_poll_fn = nullptr;
+
+// Persistent TLS client + HTTPClient so the (slow, ~1-2 s) TLS handshake happens
+// once and subsequent fetches reuse the same keep-alive connection. Recreating
+// these per fetch caused repeated handshakes that often failed (start_ssl_client
+// -1) and stretched the effective update interval to ~10 s.
+WiFiClientSecure s_client;
+HTTPClient s_http;
+bool s_https_init = false;
 
 void pollNetwork() {
   if (s_poll_fn != nullptr) {
@@ -28,22 +37,23 @@ void pollNetwork() {
   }
 }
 
-int performGetWithPoll(HTTPClient& http) {
-  http.setConnectTimeout(kConnectAttemptMs);
-  const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
-    pollNetwork();
-    const int code = http.GET();
-    if (code > 0) {
-      return code;
-    }
-    if (code != HTTPC_ERROR_CONNECTION_REFUSED &&
-        code != HTTPC_ERROR_NOT_CONNECTED) {
-      return code;
-    }
-    delay(5);
+void ensureHttpsInit() {
+  if (s_https_init) {
+    return;
   }
-  return HTTPC_ERROR_READ_TIMEOUT;
+  s_client.setInsecure();   // adsb.fi is public; skip cert validation
+  s_http.setReuse(true);    // HTTP keep-alive: hold the TLS connection open
+  s_https_init = true;
+}
+
+int httpGet(const String& url) {
+  if (!s_http.begin(s_client, url)) {
+    return HTTPC_ERROR_CONNECTION_REFUSED;
+  }
+  s_http.setConnectTimeout(kConnectTimeoutMs);
+  s_http.setTimeout(kRequestTimeoutMs);
+  pollNetwork();
+  return s_http.GET();
 }
 
 bool readResponseBodyWithPoll(HTTPClient& http, String& payload) {
@@ -187,6 +197,14 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
   }
 }
 
+bool isRotorcraft(const JsonObject& plane) {
+  // ADS-B emitter category "A7" = rotorcraft (helicopter).
+  if (!plane["category"].is<const char*>()) {
+    return false;
+  }
+  return strcmp(plane["category"].as<const char*>(), "A7") == 0;
+}
+
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
   if (ac->callsign[0] == '\0') {
@@ -205,6 +223,8 @@ size_t aircraftCount() { return s_aircraft_count; }
 
 const Aircraft* aircraftList() { return s_aircraft; }
 
+unsigned long lastUpdateMillis() { return s_last_update_ms; }
+
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
@@ -215,33 +235,45 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   url += "/dist/";
   url += String(dist_nm, 1);
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  ensureHttpsInit();
 
-  HTTPClient http;
-  if (!http.begin(client, url)) {
-    Serial.println("adsb: http.begin failed");
-    return false;
+  int code = httpGet(url);
+  if (code <= 0) {
+    // A reused keep-alive socket the server already closed (or a failed
+    // handshake) shows up as a negative code — drop it and retry once fresh.
+    s_http.end();
+    s_client.stop();
+    code = httpGet(url);
   }
-
-  http.setTimeout(kRequestTimeoutMs);
-  const int code = performGetWithPoll(http);
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
-    http.end();
+    s_http.end();
     return false;
   }
 
   String payload;
-  if (!readResponseBodyWithPoll(http, payload)) {
+  if (!readResponseBodyWithPoll(s_http, payload)) {
     Serial.println("adsb: empty response");
-    http.end();
+    s_http.end();
     return false;
   }
-  http.end();
+  s_http.end();  // setReuse(true) keeps the underlying TLS socket alive
+
+  // Only deserialize the handful of fields the radar uses. adsb.fi returns ~40
+  // fields per aircraft; parsing all of them blows the heap (NoMemory) on big
+  // responses. A filter keeps the document tiny regardless of aircraft count.
+  JsonDocument filter;
+  JsonObject f = filter["ac"].add<JsonObject>();
+  for (const char* key :
+       {"lat", "lon", "true_heading", "mag_heading", "track", "dir", "gs",
+        "tas", "ias", "flight", "hex", "t", "alt_baro", "alt_geom",
+        "category"}) {
+    f[key] = true;
+  }
 
   JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, payload);
+  const DeserializationError err =
+      deserializeJson(doc, payload, DeserializationOption::Filter(filter));
   if (err) {
     Serial.printf("adsb: JSON parse error: %s\n", err.c_str());
     return false;
@@ -250,6 +282,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (ac.isNull()) {
     s_aircraft_count = 0;
+    s_last_update_ms = millis();
     return true;
   }
 
@@ -270,11 +303,13 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_aircraft[n].nose_deg = pickNoseHeading(plane);
     s_aircraft[n].track_deg = pickTrackHeading(plane);
     s_aircraft[n].gs_knots = pickGroundSpeed(plane);
+    s_aircraft[n].is_helicopter = isRotorcraft(plane);
     fillTagFields(&s_aircraft[n], plane);
     ++n;
   }
 
   s_aircraft_count = n;
+  s_last_update_ms = millis();
   Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
   return true;
 }

@@ -6,6 +6,21 @@
 
 #include "config.h"
 
+// Optional dev-time pre-seed (git-ignored). See include/secrets.example.h.
+#if defined(__has_include)
+#  if __has_include("secrets.h")
+#    include "secrets.h"
+#  endif
+#endif
+
+#if defined(PLANE_RADAR_LAT) && defined(PLANE_RADAR_LON)
+#  define PLANE_RADAR_DEFAULT_LAT (PLANE_RADAR_LAT)
+#  define PLANE_RADAR_DEFAULT_LON (PLANE_RADAR_LON)
+#else
+#  define PLANE_RADAR_DEFAULT_LAT (config::kDefaultRadarLat)
+#  define PLANE_RADAR_DEFAULT_LON (config::kDefaultRadarLon)
+#endif
+
 namespace services::location {
 
 namespace {
@@ -14,8 +29,8 @@ constexpr char kPrefsNamespace[] = "radar";
 constexpr char kKeyLat[] = "lat";
 constexpr char kKeyLon[] = "lon";
 
-double s_lat = config::kDefaultRadarLat;
-double s_lon = config::kDefaultRadarLon;
+double s_lat = PLANE_RADAR_DEFAULT_LAT;
+double s_lon = PLANE_RADAR_DEFAULT_LON;
 
 bool parseCoord(const char* text, double* out) {
   if (text == nullptr || text[0] == '\0') {
@@ -47,6 +62,16 @@ void persist(double lat, double lon) {
 }  // namespace
 
 void init() {
+#if defined(PLANE_RADAR_FORCE_SECRETS) && defined(PLANE_RADAR_LAT) && \
+    defined(PLANE_RADAR_LON)
+  // Force-override: stomp whatever is in NVS with the secrets.h coordinates,
+  // recovering from corrupted/stale saved values. Persist so it sticks even
+  // after the force flag is removed.
+  Serial.println("location: forcing coordinates from secrets.h");
+  persist(PLANE_RADAR_DEFAULT_LAT, PLANE_RADAR_DEFAULT_LON);
+  return;
+#endif
+
   Preferences prefs;
   prefs.begin(kPrefsNamespace, true);
   if (prefs.isKey(kKeyLat) && prefs.isKey(kKeyLon)) {
@@ -84,8 +109,8 @@ void clear() {
   prefs.remove(kKeyLat);
   prefs.remove(kKeyLon);
   prefs.end();
-  s_lat = config::kDefaultRadarLat;
-  s_lon = config::kDefaultRadarLon;
+  s_lat = PLANE_RADAR_DEFAULT_LAT;
+  s_lon = PLANE_RADAR_DEFAULT_LON;
 }
 
 }  // namespace services::location

@@ -13,12 +13,16 @@ struct Aircraft {
   char callsign[9];
   char type[5];
   char alt[12];
+  bool is_helicopter;  // ADS-B emitter category A7 (rotorcraft)
 };
 
 constexpr size_t kMaxAircraft = 64;
 
 size_t aircraftCount();
 const Aircraft* aircraftList();
+
+/** millis() at the last successful fetch (for dead-reckoning between updates). */
+unsigned long lastUpdateMillis();
 
 /** Hook invoked during long HTTP I/O (e.g. wifiLoop). Optional. */
 using PollFn = void (*)();
