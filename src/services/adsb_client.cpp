@@ -206,6 +206,7 @@ bool isRotorcraft(const JsonObject& plane) {
 }
 
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
+  copyJsonStringTrimmed(plane, "hex", ac->hex, sizeof(ac->hex));
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
   if (ac->callsign[0] == '\0') {
     copyJsonStringTrimmed(plane, "hex", ac->callsign, sizeof(ac->callsign));

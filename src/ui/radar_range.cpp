@@ -15,12 +15,12 @@ constexpr char kPrefsNamespace[] = "planeradar";
 constexpr char kPrefsRangeKey[] = "rangeIdx";
 constexpr char kPrefsMilesKey[] = "useMiles";
 constexpr char kPrefsRunwaysKey[] = "showRwys";
-constexpr uint8_t kDefaultRangeIndex = 1;  // 10 km ring
-constexpr float kKmPerMile = 1.609344f;
+constexpr uint8_t kDefaultRangeIndex = 1;  // 2 mi ring
+// kKmPerMile now lives in radar_range.h (shared with the presets).
 
 Preferences s_prefs;
 uint8_t s_range_index = kDefaultRangeIndex;
-bool s_use_miles = false;
+bool s_use_miles = true;  // presets are mile-based; default to miles labels
 bool s_show_runways = true;
 
 void saveRangeIndex() {
@@ -68,7 +68,7 @@ void rangeInit() {
   const uint8_t saved = s_prefs.getUChar(kPrefsRangeKey, kDefaultRangeIndex);
   s_range_index =
       (saved < kRangePresetCount) ? saved : kDefaultRangeIndex;
-  s_use_miles = s_prefs.getBool(kPrefsMilesKey, false);
+  s_use_miles = s_prefs.getBool(kPrefsMilesKey, true);  // default miles
   s_show_runways = s_prefs.getBool(kPrefsRunwaysKey, true);
   s_prefs.end();
 }
@@ -123,7 +123,7 @@ void formatCurrentRing3Label(char* buf, size_t len) {
 }
 
 void unitsReset() {
-  s_use_miles = false;
+  s_use_miles = true;
   s_show_runways = true;
   if (s_prefs.begin(kPrefsNamespace, false)) {
     s_prefs.remove(kPrefsMilesKey);

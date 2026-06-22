@@ -27,12 +27,14 @@ bool vlwActiveOn(const lgfx::LGFXBase& gfx) {
 }  // namespace
 
 bool displayFontInit() {
-  s_vlw_loaded = vlwDataLen() > 0 &&
-                 tft.loadFont(vlwData(), lgfx::IFont::font_type_t::ft_vlw);
-  if (!s_vlw_loaded) {
-    Serial.println("Smooth font load failed — using bitmap fallback");
-  }
-  return s_vlw_loaded;
+  // Force the bitmap (non-anti-aliased) GFX fonts. The radar composites into a
+  // 4-bit paletted sprite; anti-aliased VLW glyphs blend colors that have no
+  // exact palette entry, which faults the paletted read path. Bitmap glyphs are
+  // solid fg/bg, so they're palette-safe.
+  (void)vlwData;
+  (void)vlwDataLen;
+  s_vlw_loaded = false;
+  return false;
 }
 
 bool displayFontIsSmooth() { return s_vlw_loaded; }

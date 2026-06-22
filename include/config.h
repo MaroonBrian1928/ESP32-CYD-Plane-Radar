@@ -72,8 +72,9 @@ constexpr float kAdsbFetchRadiusScale = 1.0f;
 constexpr bool kAdsbShowGroundAircraft = false;
 
 // --- Motion smoothing (dead-reckoning between ADS-B updates) ---
-/** Redraw cadence for the in-between animation frames (~12.5 fps target). */
-constexpr unsigned long kRadarAnimFrameMs = 80;
+/** Redraw cadence for the in-between animation frames (~30 fps target; actual
+ *  rate is capped by render time, which the cached grid layer keeps low). */
+constexpr unsigned long kRadarAnimFrameMs = 33;
 /** Stop extrapolating if updates stall, so stale targets don't fly away (s). */
 constexpr float kRadarExtrapMaxSec = 8.0f;
 

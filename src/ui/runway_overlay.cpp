@@ -195,8 +195,7 @@ bool drawRunwayLine(lgfx::LGFXBase& gfx, const data::large_airports::Runway& rw)
   clipPointToOuterRing(x0, y0, &x1, &y1);
   clipPointToOuterRing(x1, y1, &x0, &y0);
 
-  gfx.drawWideLine(x0, y0, x1, y1, radar::kRunwayLineHalfWidth,
-                   radar::kColorRunway);
+  gfx.drawLine(x0, y0, x1, y1, radar::kColorRunway);  // solid; paletted sprite
   return true;
 }
 

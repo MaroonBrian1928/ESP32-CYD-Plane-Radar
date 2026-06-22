@@ -499,11 +499,12 @@ bool wifiSetupConnect() {
   }
 
 #if defined(PLANE_RADAR_FORCE_SECRETS) && defined(PLANE_RADAR_WIFI_SSID)
-  // Force-override: drop saved Wi-Fi and reconnect from secrets.h, recovering
-  // from corrupted/stale stored credentials. A successful connect re-persists
-  // them, so this sticks after the force flag is removed.
+  // Force-override: connect from secrets.h first, overriding stored creds. A
+  // successful WiFi.begin() re-persists these, overwriting corrupted/stale
+  // saved values. We do NOT erase first — so if this connect hiccups, the
+  // previously saved network still works as a fallback below instead of
+  // stranding the device in the setup portal.
   Serial.println("WiFi: forcing credentials from secrets.h");
-  eraseWifiCredentials();
   if (connectFromSecrets(true) && wifiLinkUp()) {
     WiFi.setAutoReconnect(true);
     Serial.printf("Connected (secrets.h, forced): %s  IP %s\n",

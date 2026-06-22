@@ -8,13 +8,15 @@ namespace ui::radar {
 /**
  * Range presets (label on ring 3 = ¾ of outer radius).
  *
- * Recommended for ADS-B on a 1.28″ display:
- *   5 km  — pattern / very local (airfield vicinity)
- *  10 km  — default; neighborhood spotting
- *  15 km  — wider local area
- *  25 km  — metro / regional picture
+ * Tuned for close-in spotting in miles:
+ *   1 mi — pattern / very local (airfield vicinity)
+ *   2 mi — default; neighborhood spotting
+ *   3 mi — wider local area
+ *   5 mi — metro / regional picture
+ *  50 mi — wide-area (catch distant traffic)
  *
- * Outer radius (for aircraft math) is ring-3 distance ÷ 0.75.
+ * Stored in km internally (the label formatter converts to mi when miles units
+ * are on). Outer radius (for aircraft math) is ring-3 distance ÷ 0.75.
  */
 struct RangePreset {
   /** Distance shown on ring 3 (¾ of outer radius), always stored in km. */
@@ -23,12 +25,14 @@ struct RangePreset {
 };
 
 constexpr float kRing3ToOuterKm = 4.0f / 3.0f;
+constexpr float kKmPerMile = 1.609344f;
 
 constexpr RangePreset kRangePresets[] = {
-    {5.0f, 5.0f * kRing3ToOuterKm},
-    {10.0f, 10.0f * kRing3ToOuterKm},
-    {15.0f, 15.0f * kRing3ToOuterKm},
-    {25.0f, 25.0f * kRing3ToOuterKm},
+    {1.0f * kKmPerMile, 1.0f * kKmPerMile * kRing3ToOuterKm},
+    {2.0f * kKmPerMile, 2.0f * kKmPerMile * kRing3ToOuterKm},
+    {3.0f * kKmPerMile, 3.0f * kKmPerMile * kRing3ToOuterKm},
+    {5.0f * kKmPerMile, 5.0f * kKmPerMile * kRing3ToOuterKm},
+    {50.0f * kKmPerMile, 50.0f * kKmPerMile * kRing3ToOuterKm},
 };
 
 constexpr size_t kRangePresetCount =

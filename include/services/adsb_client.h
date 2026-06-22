@@ -10,6 +10,7 @@ struct Aircraft {
   float nose_deg;
   float track_deg;
   float gs_knots;
+  char hex[7];       // ICAO 24-bit address (stable id across updates)
   char callsign[9];
   char type[5];
   char alt[12];

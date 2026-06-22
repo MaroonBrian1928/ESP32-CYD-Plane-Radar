@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "config.h"
 #include "hardware/display.h"
@@ -174,29 +176,20 @@ void initTagLabelMetrics() {
   s_tag_label_metrics_ready = true;
 }
 
+// On a paletted sprite the "color" passed to a draw call is a PALETTE INDEX, not
+// an RGB value. So the kColor* the drawing code uses are indices here; the real
+// RGB lives in the sprite palette (see applyFramePalette). Index 0 = background.
 void initPalette() {
-  radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
-  radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
-  radar::kColorLabel = tft.color565(255, 255, 255);
-  radar::kColorCenter = tft.color565(255, 255, 255);
-  // GC9A01 BGR panel: swap R/B in color565 so logical red renders red on screen.
-  if (config::kDisplayRgbOrder) {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftB, radar::kAircraftG, radar::kAircraftR);
-  } else {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB);
-  }
-  radar::kColorTrackVector =
-      tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
-  radar::kColorTagType =
-      tft.color565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
-  radar::kColorTagAltitude =
-      tft.color565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB);
-  radar::kColorRunway =
-      tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
-  radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
-                                          radar::kRunwayLabelB);
+  radar::kColorBackground = 0;
+  radar::kColorGrid = 1;
+  radar::kColorLabel = 2;
+  radar::kColorCenter = 2;  // white, same as label
+  radar::kColorAircraft = 3;
+  radar::kColorTrackVector = 4;
+  radar::kColorTagType = 5;
+  radar::kColorTagAltitude = 6;
+  radar::kColorRunway = 7;
+  radar::kColorRunwayLabel = 8;
 }
 
 constexpr float kKmPerDeg = 111.0f;
@@ -229,10 +222,83 @@ void extrapolatedLatLon(const services::adsb::Aircraft& p, float* out_lat,
   *out_lon = p.lon + (dist_km * sinf(track_rad)) / (kKmPerDeg * coslat);
 }
 
+// Per-aircraft low-pass filter on the displayed position, keyed by ICAO hex.
+// The dead-reckoned target moves smoothly, but each fresh fix introduces a small
+// correction; easing the displayed position toward the target glides over that
+// correction instead of snapping. Slots are reused (oldest evicted) so the set
+// of tracked aircraft stays bounded.
+struct PosTrail {
+  char hex[7];
+  float lat;
+  float lon;
+  unsigned long seen_ms;
+  bool active;
+};
+PosTrail s_trail[services::adsb::kMaxAircraft] = {};
+
+/** Fraction of the gap to the target closed each animation frame. */
+constexpr float kPosEase = 0.30f;
+
+void easedPosition(const services::adsb::Aircraft& p, float* out_lat,
+                   float* out_lon) {
+  float tgt_lat = 0.0f;
+  float tgt_lon = 0.0f;
+  extrapolatedLatLon(p, &tgt_lat, &tgt_lon);
+
+  if (p.hex[0] == '\0') {  // no id to track — can't ease, draw target directly
+    *out_lat = tgt_lat;
+    *out_lon = tgt_lon;
+    return;
+  }
+
+  const unsigned long now = millis();
+  PosTrail* match = nullptr;
+  PosTrail* free_slot = nullptr;
+  PosTrail* oldest = &s_trail[0];
+  for (auto& t : s_trail) {
+    if (t.active && strcmp(t.hex, p.hex) == 0) {
+      match = &t;
+      break;
+    }
+    if (!t.active && free_slot == nullptr) {
+      free_slot = &t;
+    }
+    if (t.seen_ms < oldest->seen_ms) {
+      oldest = &t;
+    }
+  }
+
+  if (match != nullptr) {
+    // Known track: ease the displayed position toward the target.
+    match->lat += (tgt_lat - match->lat) * kPosEase;
+    match->lon += (tgt_lon - match->lon) * kPosEase;
+    match->seen_ms = now;
+    *out_lat = match->lat;
+    *out_lon = match->lon;
+    return;
+  }
+
+  // New track: claim a free slot (or evict the least-recently-seen) and snap.
+  PosTrail* slot = (free_slot != nullptr) ? free_slot : oldest;
+  strncpy(slot->hex, p.hex, sizeof(slot->hex));
+  slot->hex[sizeof(slot->hex) - 1] = '\0';
+  slot->lat = tgt_lat;
+  slot->lon = tgt_lon;
+  slot->seen_ms = now;
+  slot->active = true;
+  *out_lat = tgt_lat;
+  *out_lon = tgt_lon;
+}
+
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
                         float* dist_km) {
+  // Equirectangular projection: a degree of longitude is only 111·cos(lat) km,
+  // so scale east-west by cos(center latitude). Without this, E-W distances and
+  // on-screen positions are inflated by 1/cos(lat) (≈1.4× at 45°N).
+  const float coslat =
+      cosf(static_cast<float>(services::location::lat()) * kDegToRadF);
   *dx_km =
-      static_cast<float>(lon - services::location::lon()) * kKmPerDeg;
+      static_cast<float>(lon - services::location::lon()) * kKmPerDeg * coslat;
   *dy_km =
       static_cast<float>(lat - services::location::lat()) * kKmPerDeg;
   *dist_km = sqrtf((*dx_km) * (*dx_km) + (*dy_km) * (*dy_km));
@@ -352,19 +418,17 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
   if (ex == tip_x && ey == tip_y) {
     return;
   }
-  s_draw->drawWideLine(tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
-                       color);
+  s_draw->drawLine(tip_x, tip_y, ex, ey, color);
 }
 
 void applyTagStyle() {
-  if (s_tag_use_vlw) {
-    displayFontSetSmoothSize(*s_draw, s_tag_vlw_size);
-  } else {
-    displayFontSetBitmap(*s_draw, s_tag_gfx);
-  }
+  // Compact 6×8 classic font for the dense 3-line aircraft tags.
+  s_draw->setFont(&fonts::Font0);
+  s_draw->setTextSize(1);
 }
 
-int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
+int measureTagBlockWidth(const services::adsb::Aircraft& plane,
+                         const char* dist_str) {
   applyTagStyle();
   int max_w = 0;
   if (plane.callsign[0] != '\0') {
@@ -379,8 +443,8 @@ int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
       max_w = w;
     }
   }
-  if (plane.alt[0] != '\0') {
-    const int w = s_draw->textWidth(plane.alt);
+  if (dist_str[0] != '\0') {
+    const int w = s_draw->textWidth(dist_str);
     if (w > max_w) {
       max_w = w;
     }
@@ -388,12 +452,13 @@ int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
   return max_w;
 }
 
-void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane) {
+void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane,
+                     const char* dist_str) {
   initTagLabelMetrics();
   applyTagStyle();
 
   const int line_h = s_draw->fontHeight();
-  const int block_w = measureTagBlockWidth(plane);
+  const int block_w = measureTagBlockWidth(plane, dist_str);
   const int block_h = line_h * 3;
   int ly = y - block_h / 2;
 
@@ -425,9 +490,18 @@ void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane) {
   }
   ly += line_h;
 
-  if (plane.alt[0] != '\0') {
+  if (dist_str[0] != '\0') {
     s_draw->setTextColor(radar::kColorTagAltitude, radar::kColorBackground);
-    s_draw->drawString(plane.alt, anchor_x, ly);
+    s_draw->drawString(dist_str, anchor_x, ly);
+  }
+}
+
+// Format a center-relative distance in the active units (e.g. "2.3mi").
+void formatDistance(float dist_km, char* buf, size_t len) {
+  if (radar::useMiles()) {
+    snprintf(buf, len, "%.1fmi", dist_km / radar::kKmPerMile);
+  } else {
+    snprintf(buf, len, "%.1fkm", dist_km);
   }
 }
 
@@ -436,6 +510,7 @@ struct AircraftDrawItem {
   int x = 0;
   int y = 0;
   int dist_sq = 0;
+  float dist_km = 0.0f;
 };
 
 void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
@@ -461,11 +536,17 @@ void drawAircraft() {
   size_t draw_count = 0;
 
   for (size_t i = 0; i < n; ++i) {
-    int x = 0;
-    int y = 0;
     float lat = 0.0f;
     float lon = 0.0f;
-    extrapolatedLatLon(planes[i], &lat, &lon);  // dead-reckon between updates
+    easedPosition(planes[i], &lat, &lon);  // dead-reckon + smoothed correction
+
+    float dx_km = 0.0f;
+    float dy_km = 0.0f;
+    float dist_km = 0.0f;
+    offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
+
+    int x = 0;
+    int y = 0;
     latLonToScreen(lat, lon, &x, &y);
     // Draw every aircraft at its real position; cull only those that fall off
     // the physical screen. (No fixed-radius rim dots — those showed a fake
@@ -478,6 +559,7 @@ void drawAircraft() {
     items[draw_count].x = x;
     items[draw_count].y = y;
     items[draw_count].dist_sq = distSqFromCenter(x, y);
+    items[draw_count].dist_km = dist_km;
     ++draw_count;
   }
 
@@ -490,32 +572,30 @@ void drawAircraft() {
                     planes[i].gs_knots, radar::kColorTrackVector);
     if (planes[i].is_helicopter) {
       // Rotorcraft: a filled circle (no fixed nose direction like a plane).
-      s_draw->fillSmoothCircle(x, y, radar::kHeliMarkerRadiusPx,
-                               radar::kColorAircraft);
+      s_draw->fillCircle(x, y, radar::kHeliMarkerRadiusPx,
+                         radar::kColorAircraft);
     } else {
       drawHeadingTriangle(x, y, planes[i].nose_deg, radar::kColorAircraft);
     }
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
-    drawAircraftTag(items[d].x, items[d].y, planes[i]);
+    char dist_str[12];
+    formatDistance(items[d].dist_km, dist_str, sizeof(dist_str));
+    drawAircraftTag(items[d].x, items[d].y, planes[i], dist_str);
   }
 }
 
 void applyCardinalStyle() {
-  if (s_cardinal_use_vlw) {
-    displayFontSetSmoothSize(*s_draw, s_cardinal_vlw_size);
-  } else {
-    displayFontSetBitmap(*s_draw, s_cardinal_gfx);
-  }
+  // 16 px classic font for the N/S/E/W bezel labels.
+  s_draw->setFont(&fonts::Font2);
+  s_draw->setTextSize(1);
 }
 
 void applyScaleStyle() {
-  if (s_scale_use_vlw) {
-    displayFontSetSmoothSize(*s_draw, s_scale_vlw_size);
-  } else {
-    displayFontSetBitmap(*s_draw, s_scale_gfx);
-  }
+  // 16 px classic font for the range label / legend.
+  s_draw->setFont(&fonts::Font2);
+  s_draw->setTextSize(1);
 }
 
 void drawCardinalLabel(const char* text, int x, int y, textdatum_t datum) {
@@ -563,14 +643,13 @@ void drawRings(int cx, int cy, int outer_radius) {
 }
 
 void drawCrosshairs(int cx, int cy, int radius, uint16_t color) {
-  s_draw->drawWideLine(cx, cy - radius, cx, cy + radius,
-                       radar::kGridStrokeHalfWidth, color);
-  s_draw->drawWideLine(cx - radius, cy, cx + radius, cy,
-                       radar::kGridStrokeHalfWidth, color);
+  // Solid (non-AA) lines — paletted sprite can't blend.
+  s_draw->drawLine(cx, cy - radius, cx, cy + radius, color);
+  s_draw->drawLine(cx - radius, cy, cx + radius, cy, color);
 }
 
 void drawCenterDot(int cx, int cy) {
-  s_draw->fillSmoothCircle(cx, cy, radar::kCenterDotRadius, radar::kColorCenter);
+  s_draw->fillCircle(cx, cy, radar::kCenterDotRadius, radar::kColorCenter);
 }
 
 void drawCardinalLabels() {
@@ -615,8 +694,8 @@ void drawLegend() {
   s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
   s_draw->drawString("Plane", x_txt, y_plane);
 
-  s_draw->fillSmoothCircle(x_sym, y_heli, radar::kHeliMarkerRadiusPx,
-                           radar::kColorAircraft);
+  s_draw->fillCircle(x_sym, y_heli, radar::kHeliMarkerRadiusPx,
+                     radar::kColorAircraft);
   s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
   s_draw->drawString("Heli", x_txt, y_heli);
 }
@@ -642,33 +721,60 @@ void drawStaticGrid(Gfx& gfx) {
   gfx.setTextDatum(textdatum_t::top_left);
 }
 
+// Map each palette index (see initPalette) to its real RGB565 color. These are
+// the same color565 values the working 8-bit build used, so the panel renders
+// them identically.
+void applyFramePalette() {
+  s_frame.setPaletteColor(0, tft.color565(radar::kBgR, radar::kBgG, radar::kBgB));
+  s_frame.setPaletteColor(1,
+                          tft.color565(radar::kGridR, radar::kGridG, radar::kGridB));
+  s_frame.setPaletteColor(2, tft.color565(255, 255, 255));
+  if (config::kDisplayRgbOrder) {  // BGR panels: swap R/B so red renders red
+    s_frame.setPaletteColor(
+        3, tft.color565(radar::kAircraftB, radar::kAircraftG, radar::kAircraftR));
+  } else {
+    s_frame.setPaletteColor(
+        3, tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB));
+  }
+  s_frame.setPaletteColor(
+      4, tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB));
+  s_frame.setPaletteColor(
+      5, tft.color565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB));
+  s_frame.setPaletteColor(
+      6, tft.color565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB));
+  s_frame.setPaletteColor(
+      7, tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB));
+  s_frame.setPaletteColor(8, tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
+                                          radar::kRunwayLabelB));
+  s_frame.setPaletteColor(15,
+                          tft.color565(radar::kBgR, radar::kBgG, radar::kBgB));
+}
+
 bool ensureFrameSprite() {
   if (s_frame_ready) {
     return true;
   }
-  // 8-bit RGB332 (direct color) full-screen buffer = 320×240×1 ≈ 75 KB, well
-  // under the no-PSRAM ESP32's ~110 KB largest-contiguous-DRAM ceiling. A
-  // paletted buffer would be smaller but CANNOT be used here: the radar draws
-  // anti-aliased primitives (drawWideLine, fillSmoothCircle) that alpha-blend by
-  // reading back pixels, and that read path faults on a paletted sprite. RGB332
-  // is direct color, so blending works. Colors are tuned to the RGB332 grid in
-  // radar_theme.h so the quantization is (mostly) invisible.
-  s_frame.setColorDepth(8);  // rgb332_1Byte (NOT palette_8bit — see above)
+  // 4-bit paletted full-screen buffer = 320×240×½ ≈ 38 KB — half the RAM of an
+  // 8-bit buffer (relieving the heap for Wi-Fi/TLS), exact colors, and faster to
+  // push. Safe ONLY because the radar draws no anti-aliased primitives: those
+  // blend colors absent from the palette and fault the paletted read path, so
+  // all lines/circles/text are solid (see display_font.cpp and the *Line/Circle
+  // calls — drawLine/fillCircle, never drawWideLine/fillSmoothCircle).
+  s_frame.setColorDepth(lgfx::v1::color_depth_t::palette_4bit);
   if (!s_frame.createSprite(radar::kScreenWidth, radar::kScreenHeight)) {
-    Serial.printf(
-        "radar: frame sprite alloc failed (free=%u, largest=%u, need=%u)\n",
-        ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
-        radar::kScreenWidth * radar::kScreenHeight);
+    Serial.printf("radar: frame sprite alloc failed (free=%u, largest=%u)\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     return false;
   }
   s_frame_ready = true;
   return true;
 }
 
-// Double-buffered frame: composite the grid AND aircraft into the off-screen
-// sprite, then blit it to the panel in a single pushSprite. Because the panel
-// is updated in one pass, labels never show an erase/redraw gap — no flicker.
+// Single-pass off-screen frame: repaint the static grid + aircraft into the
+// sprite, then blit in one pushSprite (no on-screen erase/redraw gap).
 void renderFrame() {
+  initPalette();
+  applyFramePalette();
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
   {
     const DrawScope scope(s_frame);
