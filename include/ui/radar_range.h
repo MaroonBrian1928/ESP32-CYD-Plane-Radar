@@ -15,24 +15,25 @@ namespace ui::radar {
  *   5 mi — metro / regional picture
  *  50 mi — wide-area (catch distant traffic)
  *
- * Stored in km internally (the label formatter converts to mi when miles units
- * are on). Outer radius (for aircraft math) is ring-3 distance ÷ 0.75.
+ * The preset value is the OUTER ring (max range) — a plane at the rim is ~that
+ * far away. The four rings fall at ¼ / ½ / ¾ / 1 of it. Stored in km; the label
+ * shows mi when miles units are on.
  */
 struct RangePreset {
-  /** Distance shown on ring 3 (¾ of outer radius), always stored in km. */
+  /** Labeled distance = the outer ring (max range), stored in km. */
   float ring3_km;
+  /** Outer radius for aircraft math (km). Equal to ring3_km. */
   float outer_km;
 };
 
-constexpr float kRing3ToOuterKm = 4.0f / 3.0f;
 constexpr float kKmPerMile = 1.609344f;
 
 constexpr RangePreset kRangePresets[] = {
-    {1.0f * kKmPerMile, 1.0f * kKmPerMile * kRing3ToOuterKm},
-    {2.0f * kKmPerMile, 2.0f * kKmPerMile * kRing3ToOuterKm},
-    {3.0f * kKmPerMile, 3.0f * kKmPerMile * kRing3ToOuterKm},
-    {5.0f * kKmPerMile, 5.0f * kKmPerMile * kRing3ToOuterKm},
-    {50.0f * kKmPerMile, 50.0f * kKmPerMile * kRing3ToOuterKm},
+    {1.0f * kKmPerMile, 1.0f * kKmPerMile},
+    {2.0f * kKmPerMile, 2.0f * kKmPerMile},
+    {3.0f * kKmPerMile, 3.0f * kKmPerMile},
+    {5.0f * kKmPerMile, 5.0f * kKmPerMile},
+    {50.0f * kKmPerMile, 50.0f * kKmPerMile},
 };
 
 constexpr size_t kRangePresetCount =

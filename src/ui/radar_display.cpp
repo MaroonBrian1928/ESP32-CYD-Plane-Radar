@@ -37,25 +37,14 @@ uint16_t kColorRunwayLabel = 0x7DFF;
 
 namespace {
 
-bool s_label_metrics_ready = false;
-bool s_cardinal_use_vlw = false;
-bool s_scale_use_vlw = false;
-float s_cardinal_vlw_size = 0.56f;
-float s_scale_vlw_size = 0.50f;
-float s_tag_vlw_size = 0.56f;
-const lgfx::GFXfont* s_cardinal_gfx = &fonts::FreeSansBold12pt7b;
-const lgfx::GFXfont* s_scale_gfx = &fonts::FreeSansBold9pt7b;
-const lgfx::GFXfont* s_tag_gfx = &fonts::FreeSansBold12pt7b;
-
-bool s_tag_label_metrics_ready = false;
-bool s_tag_use_vlw = false;
-
-int s_scale_label_max_w = 0;
-int s_scale_label_h = 0;
-
 lgfx::LovyanGFX* s_draw = &tft;
 LGFX_Sprite s_frame(&tft);
 bool s_frame_ready = false;
+// Cached static layer (rings/labels/runways/legend): rendered once per range
+// change and memcpy'd into s_frame each frame so only aircraft are redrawn.
+LGFX_Sprite s_grid(&tft);
+bool s_grid_ready = false;
+int s_grid_built_index = -1;
 
 class DrawScope {
  public:
@@ -65,116 +54,6 @@ class DrawScope {
  private:
   lgfx::LovyanGFX* prev_;
 };
-
-int absDiff(int a, int b) { return std::abs(a - b); }
-
-int measureGfxHeight(const lgfx::GFXfont& font) {
-  tft.setFont(&font);
-  tft.setTextSize(1);
-  return tft.fontHeight();
-}
-
-int measureVlwHeight(float size) {
-  tft.setTextSize(size);
-  return tft.fontHeight();
-}
-
-float findVlwSizeForHeight(int target_px) {
-  float lo = 0.25f;
-  float hi = 1.2f;
-  for (int i = 0; i < 16; ++i) {
-    const float mid = (lo + hi) * 0.5f;
-    if (measureVlwHeight(mid) < target_px) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
-  }
-  return hi;
-}
-
-void applyScaleStyle();
-
-const lgfx::GFXfont* pickGfxFontClosest(
-    int target_px, const lgfx::GFXfont* const* candidates, size_t count) {
-  const lgfx::GFXfont* best = candidates[0];
-  int best_diff = absDiff(measureGfxHeight(*best), target_px);
-
-  for (size_t i = 1; i < count; ++i) {
-    const int diff = absDiff(measureGfxHeight(*candidates[i]), target_px);
-    if (diff < best_diff) {
-      best_diff = diff;
-      best = candidates[i];
-    }
-  }
-  return best;
-}
-
-void initLabelMetrics() {
-  if (s_label_metrics_ready) {
-    return;
-  }
-
-  const int cardinal_target = radar::kCardinalLabelHeightPx;
-
-  if (displayFontIsSmooth()) {
-    s_cardinal_use_vlw = true;
-    s_cardinal_vlw_size = findVlwSizeForHeight(cardinal_target);
-    const int cardinal_h = measureVlwHeight(s_cardinal_vlw_size);
-    const int scale_target = cardinal_h - radar::kScaleBelowCardinalPx;
-    s_scale_use_vlw = true;
-    s_scale_vlw_size = findVlwSizeForHeight(scale_target);
-  } else {
-    const lgfx::GFXfont* cardinal_candidates[] = {&fonts::FreeSansBold12pt7b,
-                                                  &fonts::FreeSansBold9pt7b};
-    s_cardinal_gfx =
-        pickGfxFontClosest(cardinal_target, cardinal_candidates, 2);
-    s_cardinal_use_vlw = false;
-
-    const int cardinal_h = measureGfxHeight(*s_cardinal_gfx);
-    const int scale_target = cardinal_h - radar::kScaleBelowCardinalPx;
-    const lgfx::GFXfont* scale_candidates[] = {&fonts::FreeSansBold9pt7b,
-                                               &fonts::FreeSansBold12pt7b};
-    s_scale_gfx = pickGfxFontClosest(scale_target, scale_candidates, 2);
-    s_scale_use_vlw = false;
-  }
-
-  applyScaleStyle();
-  s_scale_label_h = tft.fontHeight();
-  s_scale_label_max_w = 0;
-  char label[12];
-  for (size_t i = 0; i < radar::kRangePresetCount; ++i) {
-    for (bool miles : {false, true}) {
-      radar::formatRing3Label(label, sizeof(label), radar::kRangePresets[i].ring3_km,
-                              miles);
-      const int w = tft.textWidth(label);
-      if (w > s_scale_label_max_w) {
-        s_scale_label_max_w = w;
-      }
-    }
-  }
-
-  s_label_metrics_ready = true;
-}
-
-void initTagLabelMetrics() {
-  if (s_tag_label_metrics_ready) {
-    return;
-  }
-
-  const int target = radar::kAircraftTagLabelHeightPx;
-  if (displayFontIsSmooth()) {
-    s_tag_use_vlw = true;
-    s_tag_vlw_size = findVlwSizeForHeight(target);
-  } else {
-    const lgfx::GFXfont* tag_candidates[] = {&fonts::FreeSansBold12pt7b,
-                                               &fonts::FreeSansBold9pt7b};
-    s_tag_gfx = pickGfxFontClosest(target, tag_candidates, 2);
-    s_tag_use_vlw = false;
-  }
-
-  s_tag_label_metrics_ready = true;
-}
 
 // On a paletted sprite the "color" passed to a draw call is a PALETTE INDEX, not
 // an RGB value. So the kColor* the drawing code uses are indices here; the real
@@ -454,7 +333,6 @@ int measureTagBlockWidth(const services::adsb::Aircraft& plane,
 
 void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane,
                      const char* dist_str) {
-  initTagLabelMetrics();
   applyTagStyle();
 
   const int line_h = s_draw->fontHeight();
@@ -527,7 +405,6 @@ void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
 
 
 void drawAircraft() {
-  initLabelMetrics();
 
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
@@ -702,9 +579,7 @@ void drawLegend() {
 
 template <typename Gfx>
 void drawStaticGrid(Gfx& gfx) {
-  initLabelMetrics();
   const DrawScope scope(gfx);
-  displayFontEnsureLoaded(gfx);
   const int cx = radar::kCenterX;
   const int cy = radar::kCenterY;
   const int grid_r = radar::kGridOuterRadius;
@@ -723,31 +598,31 @@ void drawStaticGrid(Gfx& gfx) {
 
 // Map each palette index (see initPalette) to its real RGB565 color. These are
 // the same color565 values the working 8-bit build used, so the panel renders
-// them identically.
-void applyFramePalette() {
-  s_frame.setPaletteColor(0, tft.color565(radar::kBgR, radar::kBgG, radar::kBgB));
-  s_frame.setPaletteColor(1,
-                          tft.color565(radar::kGridR, radar::kGridG, radar::kGridB));
-  s_frame.setPaletteColor(2, tft.color565(255, 255, 255));
+// them identically. The frame and grid sprites get identical palettes so the
+// indices memcpy'd from one render the same in the other.
+void applyFramePalette(LGFX_Sprite& spr) {
+  spr.setPaletteColor(0, tft.color565(radar::kBgR, radar::kBgG, radar::kBgB));
+  spr.setPaletteColor(1,
+                      tft.color565(radar::kGridR, radar::kGridG, radar::kGridB));
+  spr.setPaletteColor(2, tft.color565(255, 255, 255));
   if (config::kDisplayRgbOrder) {  // BGR panels: swap R/B so red renders red
-    s_frame.setPaletteColor(
+    spr.setPaletteColor(
         3, tft.color565(radar::kAircraftB, radar::kAircraftG, radar::kAircraftR));
   } else {
-    s_frame.setPaletteColor(
+    spr.setPaletteColor(
         3, tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB));
   }
-  s_frame.setPaletteColor(
-      4, tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB));
-  s_frame.setPaletteColor(
+  spr.setPaletteColor(4,
+                      tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB));
+  spr.setPaletteColor(
       5, tft.color565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB));
-  s_frame.setPaletteColor(
+  spr.setPaletteColor(
       6, tft.color565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB));
-  s_frame.setPaletteColor(
-      7, tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB));
-  s_frame.setPaletteColor(8, tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
-                                          radar::kRunwayLabelB));
-  s_frame.setPaletteColor(15,
-                          tft.color565(radar::kBgR, radar::kBgG, radar::kBgB));
+  spr.setPaletteColor(7,
+                      tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB));
+  spr.setPaletteColor(8, tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
+                                      radar::kRunwayLabelB));
+  spr.setPaletteColor(15, tft.color565(radar::kBgR, radar::kBgG, radar::kBgB));
 }
 
 bool ensureFrameSprite() {
@@ -767,15 +642,47 @@ bool ensureFrameSprite() {
     return false;
   }
   s_frame_ready = true;
+  applyFramePalette(s_frame);
+
+  // Second 38 KB buffer for the cached static layer. If it can't allocate we
+  // fall back to redrawing the grid every frame (still correct, just slower).
+  s_grid.setColorDepth(lgfx::v1::color_depth_t::palette_4bit);
+  if (s_grid.createSprite(radar::kScreenWidth, radar::kScreenHeight)) {
+    s_grid_ready = true;
+    applyFramePalette(s_grid);  // identical palette to s_frame
+  } else {
+    Serial.println("radar: grid cache unavailable — redrawing grid each frame");
+  }
   return true;
 }
 
-// Single-pass off-screen frame: repaint the static grid + aircraft into the
-// sprite, then blit in one pushSprite (no on-screen erase/redraw gap).
+// Rebuild the cached static layer only when the range changes (rings' scale
+// label + runway overlay positions depend on it).
+void ensureGridLayer() {
+  if (!s_grid_ready) {
+    return;
+  }
+  const int idx = static_cast<int>(radar::rangeIndex());
+  if (s_grid_built_index == idx) {
+    return;
+  }
+  initPalette();
+  drawStaticGrid(s_grid);  // opens its own DrawScope(s_grid)
+  s_grid_built_index = idx;
+}
+
+// Off-screen frame composited in one pass, then blit via a single pushSprite
+// (no on-screen erase/redraw gap). With the grid cache, the static layer is a
+// fast memcpy and only the aircraft are drawn each frame.
 void renderFrame() {
   initPalette();
-  applyFramePalette();
-  drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
+  if (s_grid_ready) {
+    ensureGridLayer();
+    memcpy(s_frame.getBuffer(), s_grid.getBuffer(),
+           static_cast<size_t>(radar::kScreenWidth) * radar::kScreenHeight / 2);
+  } else {
+    drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
+  }
   {
     const DrawScope scope(s_frame);
     drawAircraft();
@@ -795,7 +702,7 @@ void radarDisplayInit() {
 
 void radarDisplayDraw() {
   initPalette();
-  initLabelMetrics();
+  s_grid_built_index = -1;  // force the cached static layer to rebuild
 
   if (ensureFrameSprite()) {
     renderFrame();

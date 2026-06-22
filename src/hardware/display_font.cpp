@@ -2,55 +2,21 @@
 
 #include "hardware/display.h"
 
-extern "C" {
-extern const uint8_t _binary_data_ui_font_vlw_start[] asm(
-    "_binary_data_ui_font_vlw_start");
-extern const uint8_t _binary_data_ui_font_vlw_end[] asm("_binary_data_ui_font_vlw_end");
-}
+// The UI uses only bitmap (non-anti-aliased) fonts. The radar composites into a
+// 4-bit paletted sprite, and anti-aliased VLW glyphs blend colors that have no
+// exact palette entry — which faults the paletted read path. Bitmap glyphs are
+// solid fg/bg, so they're palette-safe. The smooth-font (VLW) path is therefore
+// stubbed out: displayFontIsSmooth() is always false, so callers take their
+// bitmap branch.
 
-namespace {
+bool displayFontInit() { return false; }
 
-bool s_vlw_loaded = false;
+bool displayFontIsSmooth() { return false; }
 
-const uint8_t* vlwData() { return _binary_data_ui_font_vlw_start; }
-
-size_t vlwDataLen() {
-  return static_cast<size_t>(_binary_data_ui_font_vlw_end -
-                               _binary_data_ui_font_vlw_start);
-}
-
-bool vlwActiveOn(const lgfx::LGFXBase& gfx) {
-  const lgfx::IFont* font = gfx.getFont();
-  return font != nullptr && font->getType() == lgfx::IFont::font_type_t::ft_vlw;
-}
-
-}  // namespace
-
-bool displayFontInit() {
-  // Force the bitmap (non-anti-aliased) GFX fonts. The radar composites into a
-  // 4-bit paletted sprite; anti-aliased VLW glyphs blend colors that have no
-  // exact palette entry, which faults the paletted read path. Bitmap glyphs are
-  // solid fg/bg, so they're palette-safe.
-  (void)vlwData;
-  (void)vlwDataLen;
-  s_vlw_loaded = false;
-  return false;
-}
-
-bool displayFontIsSmooth() { return s_vlw_loaded; }
-
-bool displayFontEnsureLoaded(lgfx::LGFXBase& gfx) {
-  if (!s_vlw_loaded) {
-    return false;
-  }
-  if (vlwActiveOn(gfx)) {
-    return true;
-  }
-  return gfx.loadFont(vlwData(), lgfx::IFont::font_type_t::ft_vlw);
-}
+bool displayFontEnsureLoaded(lgfx::LGFXBase&) { return false; }
 
 void displayFontSetSmoothSize(lgfx::LGFXBase& gfx, float size) {
-  gfx.setTextSize(size);
+  gfx.setTextSize(size);  // only reached on the (dead) smooth path
 }
 
 void displayFontSetBitmap(lgfx::LGFXBase& gfx, const lgfx::GFXfont* font) {

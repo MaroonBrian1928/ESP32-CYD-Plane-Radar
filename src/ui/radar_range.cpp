@@ -83,13 +83,9 @@ const RangePreset& rangeCurrent() { return kRangePresets[s_range_index]; }
 uint8_t rangeIndex() { return s_range_index; }
 
 float fetchRadiusKm() {
-  const float outer_km = rangeCurrent().outer_km;
-  // Fetch a little past the outer ring (~1.1×) so aircraft just outside it get
-  // direction-cue rim dots — but NOT all the way to the screen corners, which
-  // floods the rim with distant traffic. kCenterY is the radar's vertical half
-  // (the disc touches top/bottom), matching the original round-display behavior.
-  const float screen_r_px = static_cast<float>(kCenterY - kBeyondRingScreenMarginPx);
-  return outer_km * (screen_r_px / static_cast<float>(kGridOuterRadius));
+  // Fetch exactly to the outer ring so the labeled range = the max distance
+  // shown: a plane at the rim is ~outer_km away, and nothing farther appears.
+  return rangeCurrent().outer_km;
 }
 
 bool useMiles() { return s_use_miles; }

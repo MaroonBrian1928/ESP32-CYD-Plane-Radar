@@ -52,7 +52,7 @@ constexpr gpio_num_t kTouchPinIrq = GPIO_NUM_36;
 constexpr int kDisplayWidth = 320;
 constexpr int kDisplayHeight = 240;
 
-constexpr uint32_t kDisplaySpiWriteHz = 40000000;
+constexpr uint32_t kDisplaySpiWriteHz = 55000000;  // CYD ST7789 handles 55 MHz
 // DISPLAY TWEAKS (match these against your panel; values below mirror the
 // known-good System-Monitor settings for the dual-USB CYD/ST7789):
 //   * Colors look like a photo negative  -> flip kDisplayInvert.
@@ -72,9 +72,9 @@ constexpr float kAdsbFetchRadiusScale = 1.0f;
 constexpr bool kAdsbShowGroundAircraft = false;
 
 // --- Motion smoothing (dead-reckoning between ADS-B updates) ---
-/** Redraw cadence for the in-between animation frames (~30 fps target; actual
+/** Redraw cadence for the in-between animation frames (~50 fps target; actual
  *  rate is capped by render time, which the cached grid layer keeps low). */
-constexpr unsigned long kRadarAnimFrameMs = 33;
+constexpr unsigned long kRadarAnimFrameMs = 20;
 /** Stop extrapolating if updates stall, so stale targets don't fly away (s). */
 constexpr float kRadarExtrapMaxSec = 8.0f;
 

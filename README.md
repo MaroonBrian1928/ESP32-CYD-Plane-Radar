@@ -4,7 +4,7 @@
 
 **3D printed case (STL + assembly):** [MakerWorld](https://makerworld.com/en/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display#profileId-3207083) · **Firmware:** [Releases](https://github.com/MatixYo/ESP32-Plane-Radar/releases)
 
-Firmware for the **Cheap Yellow Display (ESP32-2432S028R)** — an ESP32-WROOM with a **2.8″ 320×240 ST7789/ILI9341** panel and **XPT2046 resistive touch**. Shows a circular **ADS-B radar** around your configured location, centered on the landscape screen, with **WiFiManager** for first-time setup.
+Firmware for the **Cheap Yellow Display (ESP32-2432S028R)** — an ESP32-WROOM with a **2.8″ 320×240 ST7789/ILI9341** panel and **XPT2046 resistive touch**. Shows a circular **ADS-B radar** around your configured location, centered on the landscape screen, with **WiFiManager** for first-time setup. Aircraft are drawn at their **real positions** and glide smoothly between updates.
 
 > **Note:** this is a CYD port. The original project targets an **ESP32-C3 Super Mini** with a 1.28″ round GC9A01 (240×240) — see [MatixYo/ESP32-Plane-Radar](https://github.com/MatixYo/ESP32-Plane-Radar) for that hardware.
 
@@ -13,7 +13,7 @@ Firmware for the **Cheap Yellow Display (ESP32-2432S028R)** — an ESP32-WROOM w
 1. **Wi‑Fi setup** (if needed) — captive portal on AP **`PlaneRadar-Setup`**
 2. **Radar** — live aircraft from [adsb.fi](https://opendata.adsb.fi/) on a sonar-style grid
 
-After Wi‑Fi is saved, the device reconnects automatically; the radar runs in the main loop with periodic ADS-B updates (~5 s).
+After Wi‑Fi is saved, the device reconnects automatically; the radar runs in the main loop with periodic ADS-B updates (~1.5 s), and **dead-reckons** each aircraft along its track between updates so motion is smooth, not snappy.
 
 ## Controls
 
@@ -21,10 +21,10 @@ The **BOOT** button (GPIO 0, active LOW) and the **touchscreen** both drive the 
 
 | Action | Effect |
 |--------|--------|
-| **Tap screen** *or* **short tap BOOT** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
+| **Tap screen** *or* **short tap BOOT** | Cycle range preset (1 → 2 → 3 → 5 → 50 mi); saved to flash |
 | **Hold BOOT 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
 
-During setup you can also hold BOOT at power-on to force a credential reset (same as the long press). Any spot on the screen counts as a tap — no calibration needed for cycling range.
+Any spot on the screen counts as a tap (latched on the touch IRQ, so it never misses a tap even mid-render — no calibration needed). The hold-to-reset only arms **after** BOOT has been released once, so the USB programming circuit (which can pull GPIO 0 low on a tethered board) can't trigger a spurious Wi-Fi wipe.
 
 ## Wi‑Fi setup portal
 
@@ -55,23 +55,26 @@ After a reset, the device reboots and shows the setup screen immediately (no “
 
 ### Grid
 
-- Dark blue background, subdued green rings and crosshairs
-- The circular grid is **centered on the 320×240 landscape screen**; the extra width is used for aircraft, tags, and the **E / W** labels in the side margins (**N / S** at top/bottom)
-- Range label on the **east** spoke (ring 3 = ¾ of outer radius); white center dot
-- Beyond-range direction dots project onto the **rectangular** screen border, so they reach the corners
+- True-black background, subdued green rings and crosshairs
+- The circular grid is **centered on the 320×240 landscape screen**; the extra width is used for aircraft, tags, the **E / W** labels in the side margins (**N / S** at top/bottom), and a corner legend
+- Range label in the **top-right** corner (ring 3 = ¾ of outer radius); white center dot
+- A **plane ▲ / heli ●** legend sits in the bottom-left dead space
 
 Layout and colors: `include/ui/radar_theme.h`.
 
 ### Range presets
 
-| Ring 3 label | Outer radius (aircraft scale) |
-|------------|-------------------------------|
-| 5 km / 3 mi | ~6.7 km |
-| 10 km / 6 mi | ~13.3 km (default) |
-| 15 km / 9 mi | ~20 km |
-| 25 km / 16 mi | ~33.3 km |
+Mile-based, tuned for close-in spotting. The **labeled value is the outer ring (max range)** — a plane at the rim is ~that far away, and nothing farther is shown. Rings fall at ¼ / ½ / ¾ / 1 of it.
 
-Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
+| Preset (outer ring) | Notes |
+|---------------------|-------|
+| 1 mi | pattern / very local |
+| 2 mi | default; neighborhood |
+| 3 mi | wider local area |
+| 5 mi | metro / regional |
+| 50 mi | wide-area (distant traffic) |
+
+Stored in km internally; the label shows **mi** when miles units are on (default) — see `kRangePresets` in `include/ui/radar_range.h`. Preset and units persist across reboot (`planeradar` NVS namespace).
 
 ### Runways
 
@@ -81,18 +84,26 @@ Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
 
 ### Aircraft
 
-- **Inside the outer ring** — red heading triangle, magenta speed vector (clipped at the ring), callsign / type / altitude tags
-- **Outside the ring** (still within ADS-B fetch) — small **red dot on the screen rim** at the correct bearing (direction cue; not distance-accurate past the ring)
-- **Tags** — placed toward the **center**: west (left) → tag on the **right** of the symbol; east (right) → tag on the **left**
+- Every aircraft is drawn at its **real position** (equirectangular projection, so distances are accurate at any latitude). There are **no fake rim dots** — only real positions.
+- **Planes** — red heading **triangle** with a magenta **track vector** (length ∝ ground speed, pointing along the ground track)
+- **Helicopters** (ADS-B category `A7`) — red **circle**; a **▲ Plane / ● Heli** legend sits in the bottom-left
+- **Tags** (compact font) — **callsign**, **type**, and **distance** (e.g. `2.3mi`), placed toward the center: west (left) → tag on the **right** of the symbol; east (right) → tag on the **left**
 
-As range decreases (or aircraft approach), targets move inward; beyond-ring dots become full symbols when they cross the outer ring.
+Between the ~1.5 s updates, each aircraft is **dead-reckoned** along its track at its ground speed, and the displayed position is eased toward each new fix, so motion is smooth rather than snapping.
 
 ### ADS-B
 
-- Source: `https://opendata.adsb.fi/api/v3/`
-- Fetch radius: `ui::radar::fetchRadiusKm()` — scales with the active preset to roughly the screen edge (so rim dots have data)
-- Poll interval: `kAdsbFetchIntervalMs` (5 s) in `config.h`
+- Source: `https://opendata.adsb.fi/api/v3/` (HTTPS, keep-alive connection reused across fetches)
+- Fields used: `lat` `lon` `track` `true_heading`/`mag_heading` `gs` `flight` `hex` `t` `alt_baro` `category`; the JSON is **filtered** to just these so big responses don't exhaust the heap
+- Fetch radius: `ui::radar::fetchRadiusKm()` = the active preset's outer ring
+- Poll interval: `kAdsbFetchIntervalMs` (1.5 s) in `config.h` — adsb.fi's public limit is 1 req/s
 - Ground aircraft hidden by default (`kAdsbShowGroundAircraft`)
+
+### Rendering
+
+- The frame is composited off-screen into a **4-bit paletted sprite** (~38 KB) and blitted in one `pushSprite` — flicker-free, exact palette colors, and half the RAM of an 8-bit buffer (which keeps the heap free for Wi-Fi/TLS).
+- A second **cached static layer** (rings/labels/runways/legend) is rendered once per range change and `memcpy`'d each frame, so only the aircraft are redrawn — high frame rate.
+- All drawing is **solid (non-anti-aliased)**: paletted sprites can't alpha-blend, so lines/circles/text are crisp. Frame cadence: `kRadarAnimFrameMs`; panel SPI: `kDisplaySpiWriteHz`.
 
 ## Configuration
 
@@ -106,21 +117,28 @@ Edit **`include/config.h`** for hardware and behavior:
 | Display SPI | `kDisplayPin*`, `kDisplayPinBacklight`, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz` |
 | Touch (XPT2046) | `kTouchPinSclk/Mosi/Miso/Cs/Irq` (separate SPI bus) |
 | Default location | `kDefaultRadarLat`, `kDefaultRadarLon` (until portal overrides) |
-| ADS-B | `kAdsbFetchIntervalMs`, `kAdsbShowGroundAircraft` |
+| ADS-B | `kAdsbFetchIntervalMs` (≥1000), `kAdsbShowGroundAircraft` |
+| Motion / fps | `kRadarAnimFrameMs` (frame cadence), `kRadarExtrapMaxSec` (dead-reckon cap) |
 
 Range presets: `include/ui/radar_range.h` (`kRangePresets`).
+
+### Skip the setup portal during development
+
+Copy `include/secrets.example.h` to **`include/secrets.h`** (git-ignored) and fill in your Wi-Fi + home coordinates. On a fresh device the firmware connects with those and centers the radar there — no captive portal. Anything saved later via the web portal (NVS) takes precedence. Optional `#define PLANE_RADAR_FORCE_SECRETS 1` forces these to overwrite saved values on the next boot (one-time recovery); remove it again for normal operation. The file is pulled in via `__has_include`, so the project still builds without it.
 
 **Display tweaks (CYD panel variants).** Defaults match the dual-USB CYD (ST7789, BGR, inversion off). If the first flash looks wrong:
 
 - Image looks like a photo **negative** → flip `kDisplayInvert` in `config.h`
-- **Reds/blues swapped** → flip `kDisplayRgbOrder`
+- **Reds/blues swapped** → flip `kDisplayRgbOrder` (also swaps the aircraft red in `applyFramePalette`)
 - Panel is an **ILI9341** variant, not ST7789 → swap `lgfx::Panel_ST7789` for `lgfx::Panel_ILI9341` in `include/hardware/lgfx_config.hpp`
+- Speckle/noise at high SPI clock → lower `kDisplaySpiWriteHz` (e.g. 55 MHz → 40 MHz)
 
 ## Project layout
 
 ```
 include/
   config.h
+  secrets.example.h        — copy to secrets.h (git-ignored) to skip the portal
   hardware/
     lgfx_config.hpp
     display.h
@@ -137,8 +155,6 @@ include/
     wifi_setup.h
     radar_location.h
     adsb_client.h
-data/
-  ui_font.vlw              — embedded smooth UI font (Noto Sans Bold)
 scripts/
   build_large_airports.py
   flash.sh                 — build + upload over USB serial (no sudo)
