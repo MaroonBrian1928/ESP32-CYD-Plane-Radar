@@ -2,6 +2,8 @@
 
 <img width="800" height="450" alt="plane-radar" src="https://github.com/user-attachments/assets/716d0992-dab8-47ba-8f1a-2aec7f607419" />
 
+> _Photo and case below are the **original round (GC9A01)** build. This CYD port renders the same radar on a rectangular 320×240 screen._
+
 **3D printed case (STL + assembly):** [MakerWorld](https://makerworld.com/en/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display#profileId-3207083) · **Firmware:** [Releases](https://github.com/MatixYo/ESP32-Plane-Radar/releases)
 
 Firmware for the **Cheap Yellow Display (ESP32-2432S028R)** — an ESP32-WROOM with a **2.8″ 320×240 ST7789/ILI9341** panel and **XPT2046 resistive touch**. Shows a circular **ADS-B radar** around your configured location, centered on the landscape screen, with **WiFiManager** for first-time setup. Aircraft are drawn at their **real positions** and glide smoothly between updates.
@@ -21,7 +23,7 @@ The **BOOT** button (GPIO 0, active LOW) and the **touchscreen** both drive the 
 
 | Action | Effect |
 |--------|--------|
-| **Tap screen** *or* **short tap BOOT** | Cycle range preset (1 → 2 → 3 → 5 → 50 mi); saved to flash |
+| **Tap screen** *or* **short tap BOOT** | Cycle range preset (1 → 2 → 3 → 5 → 10 mi); saved to flash |
 | **Hold BOOT 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
 
 Any spot on the screen counts as a tap (latched on the touch IRQ, so it never misses a tap even mid-render — no calibration needed). The hold-to-reset only arms **after** BOOT has been released once, so the USB programming circuit (which can pull GPIO 0 low on a tethered board) can't trigger a spurious Wi-Fi wipe.
@@ -46,7 +48,7 @@ The same portal runs on the setup AP and on the device’s LAN IP while connecte
 | Field | Purpose |
 |-------|---------|
 | **Latitude / Longitude** | Radar center and ADS-B query position (defaults in `config.h` until set) |
-| **Display distances in miles** | Ring scale label in **mi** instead of **km** (e.g. `6mi` vs `10km`) |
+| **Display distances in miles** | Range label + aircraft distances in **mi** (default) instead of **km** (e.g. `2mi` vs `3km`) |
 | **Show airport runways** | Major-airport runway overlay on the radar (off to hide) |
 
 After a reset, the device reboots and shows the setup screen immediately (no “Connecting” loop on stale credentials).
@@ -57,8 +59,10 @@ After a reset, the device reboots and shows the setup screen immediately (no “
 
 - True-black background, subdued green rings and crosshairs
 - The circular grid is **centered on the 320×240 landscape screen**; the extra width is used for aircraft, tags, the **E / W** labels in the side margins (**N / S** at top/bottom), and a corner legend
-- Range label in the **top-right** corner (ring 3 = ¾ of outer radius); white center dot
-- A **plane ▲ / heli ●** legend sits in the bottom-left dead space
+- Range label (the **outer ring / max range**) in the **top-right** corner; white center dot
+- A **plane ▲ / heli ●** legend sits in the bottom-left
+- **Top-left:** aircraft count + a feed-freshness dot (green, pulses on each fetch; red if updates stall > 6 s)
+- **Bottom-right:** NTP clock (`HH:MM`), once time is synced — **timezone is auto-derived from your coordinates** (via timeapi.io, DST-aware), so no manual setup dead space
 
 Layout and colors: `include/ui/radar_theme.h`.
 
@@ -72,7 +76,7 @@ Mile-based, tuned for close-in spotting. The **labeled value is the outer ring (
 | 2 mi | default; neighborhood |
 | 3 mi | wider local area |
 | 5 mi | metro / regional |
-| 50 mi | wide-area (distant traffic) |
+| 10 mi | wider regional |
 
 Stored in km internally; the label shows **mi** when miles units are on (default) — see `kRangePresets` in `include/ui/radar_range.h`. Preset and units persist across reboot (`planeradar` NVS namespace).
 
@@ -88,6 +92,7 @@ Stored in km internally; the label shows **mi** when miles units are on (default
 - **Planes** — red heading **triangle** with a magenta **track vector** (length ∝ ground speed, pointing along the ground track)
 - **Helicopters** (ADS-B category `A7`) — red **circle**; a **▲ Plane / ● Heli** legend sits in the bottom-left
 - **Tags** (compact font) — **callsign**, **type**, and **distance** (e.g. `2.3mi`), placed toward the center: west (left) → tag on the **right** of the symbol; east (right) → tag on the **left**
+- **Flight trails** — a dim line of each aircraft's recent path (up to ~8 min, `kTrailLen`), shown only when fewer than `kTrailMaxAircraft` (10) are in range so busy views stay clean; history is recorded in a small dedicated pool (16 slots, int16 center-offsets) so trails can be long without starving the heap
 
 Between the ~1.5 s updates, each aircraft is **dead-reckoned** along its track at its ground speed, and the displayed position is eased toward each new fix, so motion is smooth rather than snapping.
 
@@ -111,14 +116,16 @@ Edit **`include/config.h`** for hardware and behavior:
 
 | Area | Keys / notes |
 |------|----------------|
-| Portal | `kPortalApName`, `kPortalIp`, `kPortalHostname` / `kPortalHostUrl` (mDNS; needs `-DWM_MDNS` in `platformio.ini`) |
+| Portal | `kPortalApName`, `kPortalIp`, `kPortalHostname` / `kPortalHostUrl` (mDNS; needs `-DWM_MDNS` in `platformio.ini`); `kCaptivePortalEnabled` = auto-open setup AP on connect failure (set false for headless / secrets.h use — BOOT-hold reset still opens it) |
 | Wi‑Fi timing | connect attempts, reconnect grace, portal timeout (`0` = no timeout) |
 | BOOT | `kBootPin` (GPIO 0), `kBootResetHoldMs`, `kBootTapMinMs` |
 | Display SPI | `kDisplayPin*`, `kDisplayPinBacklight`, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz` |
 | Touch (XPT2046) | `kTouchPinSclk/Mosi/Miso/Cs/Irq` (separate SPI bus) |
 | Default location | `kDefaultRadarLat`, `kDefaultRadarLon` (until portal overrides) |
 | ADS-B | `kAdsbFetchIntervalMs` (≥1000), `kAdsbShowGroundAircraft` |
+| Trails | `kTrailMaxAircraft` (draw threshold); `kTrailLen` in `radar_display.cpp` (history length) |
 | Motion / fps | `kRadarAnimFrameMs` (frame cadence), `kRadarExtrapMaxSec` (dead-reckon cap) |
+| Clock | timezone auto-derived from coordinates (timeapi.io); `kTimezone` (POSIX TZ) is the offline fallback; `kNtpServer1/2` |
 
 Range presets: `include/ui/radar_range.h` (`kRangePresets`).
 
@@ -205,7 +212,7 @@ scripts/flash.sh monitor             # open the serial monitor
 
 - PlatformIO env: **`cyd`** (board `esp32dev`)
 - Serial: **115200** baud
-- The UI font is embedded in the firmware (`board_build.embed_files`), so there is **no separate SPIFFS/`uploadfs` step** — one firmware upload is all you need
+- Fonts are compiled into the firmware (built-in bitmap GFX fonts), so there is **no SPIFFS/`uploadfs` step** — one firmware upload is all you need
 
 ### Web-flashable release image
 

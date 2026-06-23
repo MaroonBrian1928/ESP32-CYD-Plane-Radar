@@ -13,6 +13,14 @@ constexpr char kPortalIp[] = "192.168.4.1";
 constexpr char kPortalHostname[] = "plane-radar";
 constexpr char kPortalHostUrl[] = "plane-radar.local";
 
+/**
+ * Auto-open the captive setup AP ("PlaneRadar-Setup") when WiFi can't connect.
+ * Set false (e.g. when relying on secrets.h) so a failed/lost connection just
+ * keeps retrying headlessly instead of spawning a setup access point. Holding
+ * BOOT to reset still opens the portal, so you can always reconfigure.
+ */
+constexpr bool kCaptivePortalEnabled = true;
+
 /** Per-attempt STA connect wait (ms); retried kWifiConnectAttempts times. */
 constexpr unsigned long kWifiConnectAttemptMs = 15000;
 constexpr uint8_t kWifiConnectAttempts = 3;
@@ -65,11 +73,15 @@ constexpr double kDefaultRadarLat = 52.3676;
 constexpr double kDefaultRadarLon = 4.9041;
 
 /** Poll adsb.fi (API public limit: 1 req/s — don't go below 1000). */
-constexpr unsigned long kAdsbFetchIntervalMs = 1500;
+constexpr unsigned long kAdsbFetchIntervalMs = 1010;
 /** Legacy scale unused — fetch uses radar::fetchRadiusKm() to screen edge. */
 constexpr float kAdsbFetchRadiusScale = 1.0f;
 /** false = hide aircraft with alt_baro "ground"; true = show them too. */
 constexpr bool kAdsbShowGroundAircraft = false;
+
+/** Draw flight trails (recent path) only when fewer than this many aircraft are
+ *  in range — keeps busy views uncluttered and fast. History is always kept. */
+constexpr int kTrailMaxAircraft = 10;
 
 // --- Motion smoothing (dead-reckoning between ADS-B updates) ---
 /** Redraw cadence for the in-between animation frames (~50 fps target; actual
@@ -77,6 +89,13 @@ constexpr bool kAdsbShowGroundAircraft = false;
 constexpr unsigned long kRadarAnimFrameMs = 20;
 /** Stop extrapolating if updates stall, so stale targets don't fly away (s). */
 constexpr float kRadarExtrapMaxSec = 8.0f;
+
+// --- Clock (NTP, shown bottom-right) ---
+/** POSIX TZ string (incl. DST rules). Default: US Central. e.g. US Eastern =
+ *  "EST5EDT,M3.2.0,M11.1.0"; UK = "GMT0BST,M3.5.0/1,M10.5.0". */
+constexpr char kTimezone[] = "CST6CDT,M3.2.0,M11.1.0";
+constexpr char kNtpServer1[] = "pool.ntp.org";
+constexpr char kNtpServer2[] = "time.nist.gov";
 
 // --- UI colors (RGB565) — status screens ---
 constexpr uint16_t kColorBlack = 0x0000;

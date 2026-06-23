@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 #include "config.h"
 #include "hardware/display.h"
@@ -32,6 +33,7 @@ uint16_t kColorTagType = 0x5DFF;
 uint16_t kColorTagAltitude = 0xFFE0;
 uint16_t kColorRunway = 0x4D5F;
 uint16_t kColorRunwayLabel = 0x7DFF;
+uint16_t kColorTrail = 0x39C7;
 
 }  // namespace radar
 
@@ -69,24 +71,29 @@ void initPalette() {
   radar::kColorTagAltitude = 6;
   radar::kColorRunway = 7;
   radar::kColorRunwayLabel = 8;
+  radar::kColorTrail = 9;
 }
 
 constexpr float kKmPerDeg = 111.0f;
 constexpr float kDegToRadF = 0.01745329252f;
 
-// Dead-reckon an aircraft's current position from its last reported fix: advance
-// it along its ground track at its ground speed for the time since the last
-// ADS-B update. Makes motion smooth between the (1.5 s) fetches instead of
-// snapping. Capped so a stalled feed doesn't send targets flying off.
-void extrapolatedLatLon(const services::adsb::Aircraft& p, float* out_lat,
-                        float* out_lon) {
+// Dead-reckon an aircraft's CURRENT position from its last reported fix: advance
+// it along its ground track at its ground speed for the true age of that fix.
+// The key is anchoring to the fix's real measurement time, not when we received
+// it: the feed's positions arrive already a few seconds stale (seen_pos_s), so
+// elapsed = seen_pos_s + time-since-fetch. With that, the prediction from a new
+// fix lands right where the previous fix's prediction already was — successive
+// predictions agree, so there's no per-fetch snap-back/correction. Capped so a
+// stalled feed doesn't fling stale targets off-screen.
+void predictedLatLon(const services::adsb::Aircraft& p, float* out_lat,
+                     float* out_lon) {
   *out_lat = p.lat;
   *out_lon = p.lon;
   if (p.gs_knots <= 0.0f) {
     return;
   }
-  float elapsed_s =
-      (millis() - services::adsb::lastUpdateMillis()) / 1000.0f;
+  float elapsed_s = p.seen_pos_s +
+                    (millis() - services::adsb::lastUpdateMillis()) / 1000.0f;
   if (elapsed_s < 0.0f) {
     elapsed_s = 0.0f;
   }
@@ -101,11 +108,10 @@ void extrapolatedLatLon(const services::adsb::Aircraft& p, float* out_lat,
   *out_lon = p.lon + (dist_km * sinf(track_rad)) / (kKmPerDeg * coslat);
 }
 
-// Per-aircraft low-pass filter on the displayed position, keyed by ICAO hex.
-// The dead-reckoned target moves smoothly, but each fresh fix introduces a small
-// correction; easing the displayed position toward the target glides over that
-// correction instead of snapping. Slots are reused (oldest evicted) so the set
-// of tracked aircraft stays bounded.
+// Per-aircraft position easing, keyed by ICAO hex: a light low-pass on the
+// displayed position that absorbs the small residual jitter (measurement noise
+// in position/speed/track) left after the prediction above. The prediction does
+// the heavy lifting — the ease just takes the edge off — so it stays subtle.
 struct PosTrail {
   char hex[7];
   float lat;
@@ -115,14 +121,47 @@ struct PosTrail {
 };
 PosTrail s_trail[services::adsb::kMaxAircraft] = {};
 
-/** Fraction of the gap to the target closed each animation frame. */
-constexpr float kPosEase = 0.30f;
+// Position easing time constant (ms): the displayed position closes the gap to
+// the predicted target with this exponential time constant. Using a *time*
+// constant (rather than a fixed fraction per frame) keeps motion smooth even
+// when frame durations vary — e.g. the frame that also runs an ADS-B fetch is
+// much longer than a 20 ms animation frame, and a per-frame fraction would lurch
+// on those. Kept short: the age-anchored prediction already tracks the true
+// position, so this only needs to soften small residual corrections, not bridge
+// a whole fetch interval (which would add visible lag).
+constexpr float kPosEaseTauMs = 140.0f;
+// Per-frame easing fraction, recomputed once per frame from the measured frame
+// dt as 1 - exp(-dt/tau). Seeded to the steady ~20 ms-frame value.
+float s_pos_ease_alpha = 0.15f;
+
+// Recompute the easing fraction from the time since the last frame. Call once
+// per rendered frame, before easing any aircraft.
+void updatePosEaseAlpha() {
+  static unsigned long s_last_ms = 0;
+  const unsigned long now = millis();
+  float dt_ms = (s_last_ms == 0) ? config::kRadarAnimFrameMs : (now - s_last_ms);
+  s_last_ms = now;
+  if (dt_ms < 1.0f) {
+    dt_ms = 1.0f;
+  }
+  // Cap dt hard. The frame that runs the ADS-B fetch blocks for a few hundred ms
+  // (the HTTPS round-trip), and that long dt would otherwise drive the easing
+  // fraction to ~1 — snapping straight to the target on exactly the frame the
+  // fresh fix's correction arrives (the residual "snap-back"). Capping near a
+  // couple animation frames keeps each step a gentle fraction, so the correction
+  // eases out over the following fast frames instead of jumping.
+  constexpr float kMaxEaseDtMs = 50.0f;
+  if (dt_ms > kMaxEaseDtMs) {
+    dt_ms = kMaxEaseDtMs;
+  }
+  s_pos_ease_alpha = 1.0f - expf(-dt_ms / kPosEaseTauMs);
+}
 
 void easedPosition(const services::adsb::Aircraft& p, float* out_lat,
                    float* out_lon) {
   float tgt_lat = 0.0f;
   float tgt_lon = 0.0f;
-  extrapolatedLatLon(p, &tgt_lat, &tgt_lon);
+  predictedLatLon(p, &tgt_lat, &tgt_lon);  // dead-reckon to now (age-anchored)
 
   if (p.hex[0] == '\0') {  // no id to track — can't ease, draw target directly
     *out_lat = tgt_lat;
@@ -148,16 +187,14 @@ void easedPosition(const services::adsb::Aircraft& p, float* out_lat,
   }
 
   if (match != nullptr) {
-    // Known track: ease the displayed position toward the target.
-    match->lat += (tgt_lat - match->lat) * kPosEase;
-    match->lon += (tgt_lon - match->lon) * kPosEase;
+    match->lat += (tgt_lat - match->lat) * s_pos_ease_alpha;
+    match->lon += (tgt_lon - match->lon) * s_pos_ease_alpha;
     match->seen_ms = now;
     *out_lat = match->lat;
     *out_lon = match->lon;
     return;
   }
 
-  // New track: claim a free slot (or evict the least-recently-seen) and snap.
   PosTrail* slot = (free_slot != nullptr) ? free_slot : oldest;
   strncpy(slot->hex, p.hex, sizeof(slot->hex));
   slot->hex[sizeof(slot->hex) - 1] = '\0';
@@ -167,6 +204,106 @@ void easedPosition(const services::adsb::Aircraft& p, float* out_lat,
   slot->active = true;
   *out_lat = tgt_lat;
   *out_lon = tgt_lon;
+}
+
+// --- Flight-trail history ---------------------------------------------------
+// A SEPARATE, small pool: trails only draw when fewer than kTrailMaxAircraft are
+// in range, so a handful of slots suffices. Keeping this pool small (not one per
+// tracked aircraft) lets each trail be long without bloating static RAM — which
+// matters because static RAM competes with the heap that TLS/sprites need.
+// Stored as int16 centi-km offsets from the (fixed) radar center (±327 km, 10 m
+// resolution), so 4 bytes/point and range-independent (reprojects on zoom).
+constexpr int kTrailLen = 480;   // ~8 min of path at ~1 point/fetch
+constexpr int kTrailSlots = 16;  // ≥ the at-most-9 trails ever drawn at once
+constexpr float kTrailFixedScale = 100.0f;  // km → centi-km
+// Drop a trail once its aircraft has been gone this long, so a vanished plane's
+// path doesn't linger or bridge across a gap if it briefly drops from the feed.
+// Sized to a few fetch cycles to tolerate normal feed flicker.
+constexpr unsigned long kTrailExpiryMs = 5000;
+struct TrailHist {
+  char hex[7];
+  bool active;
+  unsigned long seen_ms;
+  uint16_t head;
+  uint16_t count;
+  int16_t dx[kTrailLen];
+  int16_t dy[kTrailLen];
+};
+TrailHist s_trailhist[kTrailSlots] = {};
+
+void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
+                        float* dist_km);
+
+int16_t clampCentiKm(float km) {
+  const float c = km * kTrailFixedScale;
+  if (c > 32767.0f) return 32767;
+  if (c < -32768.0f) return -32768;
+  return static_cast<int16_t>(lroundf(c));
+}
+
+// Find (or claim, evicting the least-recently-seen) the trail slot for a hex.
+TrailHist* trailHistFor(const char* hex) {
+  if (hex[0] == '\0') {
+    return nullptr;
+  }
+  const unsigned long now = millis();
+  TrailHist* match = nullptr;
+  TrailHist* free_slot = nullptr;
+  TrailHist* oldest = &s_trailhist[0];
+  for (auto& th : s_trailhist) {
+    if (th.active && strcmp(th.hex, hex) == 0) {
+      match = &th;
+      break;
+    }
+    if (!th.active && free_slot == nullptr) {
+      free_slot = &th;
+    }
+    if (th.seen_ms < oldest->seen_ms) {
+      oldest = &th;
+    }
+  }
+  if (match != nullptr) {
+    match->seen_ms = now;
+    return match;
+  }
+  TrailHist* slot = (free_slot != nullptr) ? free_slot : oldest;
+  strncpy(slot->hex, hex, sizeof(slot->hex));
+  slot->hex[sizeof(slot->hex) - 1] = '\0';
+  slot->active = true;
+  slot->seen_ms = now;
+  slot->head = 0;
+  slot->count = 0;
+  return slot;
+}
+
+// Forget the path of any aircraft that's no longer being tracked: a slot whose
+// seen_ms hasn't been refreshed (trailHistFor isn't called for planes absent
+// from the current feed) is freed once it's older than the grace period.
+void pruneStaleTrails(unsigned long now) {
+  for (auto& th : s_trailhist) {
+    if (th.active && now - th.seen_ms > kTrailExpiryMs) {
+      th.active = false;
+      th.count = 0;
+      th.head = 0;
+    }
+  }
+}
+
+// Append a reported fix to the trail history (call once per ADS-B update).
+void trailAppend(TrailHist* slot, float lat, float lon) {
+  if (slot == nullptr) {
+    return;
+  }
+  float dx_km = 0.0f;
+  float dy_km = 0.0f;
+  float dist_km = 0.0f;
+  offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
+  slot->dx[slot->head] = clampCentiKm(dx_km);
+  slot->dy[slot->head] = clampCentiKm(dy_km);
+  slot->head = (slot->head + 1) % kTrailLen;
+  if (slot->count < kTrailLen) {
+    ++slot->count;
+  }
 }
 
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
@@ -389,6 +526,7 @@ struct AircraftDrawItem {
   int y = 0;
   int dist_sq = 0;
   float dist_km = 0.0f;
+  TrailHist* trail = nullptr;
 };
 
 void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
@@ -403,11 +541,50 @@ void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
   }
 }
 
+// Draw an aircraft's recent path: connect its buffered fixes (reprojected to
+// screen each frame so it follows range changes), then to the current symbol.
+void drawTrail(const TrailHist* slot, int cur_x, int cur_y, uint16_t color) {
+  if (slot == nullptr || slot->count < 1) {
+    return;
+  }
+  const float px_per_km =
+      static_cast<float>(radar::kGridOuterRadius) / radar::rangeCurrent().outer_km;
+  int prev_x = 0;
+  int prev_y = 0;
+  bool have_prev = false;
+  for (uint16_t k = 0; k < slot->count; ++k) {
+    const uint16_t idx = (slot->head + kTrailLen - slot->count + k) % kTrailLen;
+    const float dx_km = slot->dx[idx] / kTrailFixedScale;
+    const float dy_km = slot->dy[idx] / kTrailFixedScale;
+    const int x = radar::kCenterX + static_cast<int>(lroundf(dx_km * px_per_km));
+    const int y = radar::kCenterY - static_cast<int>(lroundf(dy_km * px_per_km));
+    if (have_prev) {
+      s_draw->drawLine(prev_x, prev_y, x, y, color);
+    }
+    prev_x = x;
+    prev_y = y;
+    have_prev = true;
+  }
+  s_draw->drawLine(prev_x, prev_y, cur_x, cur_y, color);  // last fix → now
+}
+
 
 void drawAircraft() {
+  static unsigned long s_trail_fix_ms = 0;
+
+  updatePosEaseAlpha();  // frame-time-based easing fraction (smooth motion)
 
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
+
+  // A brand-new ADS-B fix arrived → append each plane's reported position to its
+  // trail history exactly once (not every animation frame).
+  const unsigned long fix_ms = services::adsb::lastUpdateMillis();
+  const bool new_fix = fix_ms != s_trail_fix_ms;
+  s_trail_fix_ms = fix_ms;
+
+  // Forget paths of aircraft that have dropped out of view/feed.
+  pruneStaleTrails(millis());
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   size_t draw_count = 0;
@@ -415,7 +592,11 @@ void drawAircraft() {
   for (size_t i = 0; i < n; ++i) {
     float lat = 0.0f;
     float lon = 0.0f;
-    easedPosition(planes[i], &lat, &lon);  // dead-reckon + smoothed correction
+    easedPosition(planes[i], &lat, &lon);  // dead-reckon + smoothed display pos
+    TrailHist* slot = trailHistFor(planes[i].hex);
+    if (new_fix) {
+      trailAppend(slot, planes[i].lat, planes[i].lon);  // record real fix
+    }
 
     float dx_km = 0.0f;
     float dy_km = 0.0f;
@@ -437,10 +618,20 @@ void drawAircraft() {
     items[draw_count].y = y;
     items[draw_count].dist_sq = distSqFromCenter(x, y);
     items[draw_count].dist_km = dist_km;
+    items[draw_count].trail = slot;
     ++draw_count;
   }
 
   sortDrawItemsFarFirst(items, draw_count);
+
+  // Trails sit behind the symbols, and only when the view isn't crowded.
+  if (radar::showTrails() &&
+      n < static_cast<size_t>(config::kTrailMaxAircraft)) {
+    for (size_t d = 0; d < draw_count; ++d) {
+      drawTrail(items[d].trail, items[d].x, items[d].y, radar::kColorTrail);
+    }
+  }
+
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
     const int x = items[d].x;
@@ -622,6 +813,8 @@ void applyFramePalette(LGFX_Sprite& spr) {
                       tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB));
   spr.setPaletteColor(8, tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
                                       radar::kRunwayLabelB));
+  spr.setPaletteColor(9, tft.color565(radar::kTrailColorR, radar::kTrailColorG,
+                                      radar::kTrailColorB));
   spr.setPaletteColor(15, tft.color565(radar::kBgR, radar::kBgG, radar::kBgB));
 }
 
@@ -671,6 +864,42 @@ void ensureGridLayer() {
   s_grid_built_index = idx;
 }
 
+// Dynamic corner overlays (NOT part of the cached grid): top-left = aircraft
+// count + a feed-freshness dot; bottom-right = NTP clock. Drawn each frame.
+void drawOverlays() {
+  constexpr unsigned long kFeedStaleMs = 6000;  // no update for this long = stale
+  constexpr unsigned long kFeedPulseMs = 250;   // brief enlarge after each update
+  applyScaleStyle();  // Font2
+
+  // Top-left: aircraft count + freshness dot.
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%u",
+           static_cast<unsigned>(services::adsb::aircraftCount()));
+  s_draw->setTextDatum(textdatum_t::top_left);
+  s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+  s_draw->drawString(buf, 4, 3);
+
+  const int dot_x = 4 + s_draw->textWidth(buf) + 7;
+  const int dot_y = 10;
+  const unsigned long since = millis() - services::adsb::lastUpdateMillis();
+  if (since > kFeedStaleMs) {
+    s_draw->fillCircle(dot_x, dot_y, 3, radar::kColorAircraft);  // red = stale
+  } else {
+    const int r = (since < kFeedPulseMs) ? 5 : 3;  // green; pulse on update
+    s_draw->fillCircle(dot_x, dot_y, r, radar::kColorGrid);
+  }
+
+  // Bottom-right: HH:MM once NTP has set the clock.
+  struct tm tm_now;
+  if (getLocalTime(&tm_now, 0) && tm_now.tm_year > 120) {
+    char clk[6];
+    snprintf(clk, sizeof(clk), "%02d:%02d", tm_now.tm_hour, tm_now.tm_min);
+    s_draw->setTextDatum(textdatum_t::bottom_right);
+    s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+    s_draw->drawString(clk, radar::kScreenWidth - 4, radar::kScreenHeight - 3);
+  }
+}
+
 // Off-screen frame composited in one pass, then blit via a single pushSprite
 // (no on-screen erase/redraw gap). With the grid cache, the static layer is a
 // fast memcpy and only the aircraft are drawn each frame.
@@ -686,6 +915,7 @@ void renderFrame() {
   {
     const DrawScope scope(s_frame);
     drawAircraft();
+    drawOverlays();
   }
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);

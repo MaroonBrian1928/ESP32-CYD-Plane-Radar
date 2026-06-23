@@ -95,6 +95,10 @@ constexpr uint8_t kRunwayB = 170;
 constexpr uint8_t kRunwayLabelR = 110;
 constexpr uint8_t kRunwayLabelG = 210;
 constexpr uint8_t kRunwayLabelB = 230;
+/** Flight trail (recent path) — dim slate so it sits behind the symbols. */
+constexpr uint8_t kTrailColorR = 70;
+constexpr uint8_t kTrailColorG = 90;
+constexpr uint8_t kTrailColorB = 110;
 
 extern uint16_t kColorBackground;
 extern uint16_t kColorGrid;
@@ -106,5 +110,6 @@ extern uint16_t kColorTagType;
 extern uint16_t kColorTagAltitude;
 extern uint16_t kColorRunway;
 extern uint16_t kColorRunwayLabel;
+extern uint16_t kColorTrail;
 
 }  // namespace ui::radar

@@ -10,6 +10,7 @@ struct Aircraft {
   float nose_deg;
   float track_deg;
   float gs_knots;
+  float seen_pos_s;  // age of the position fix at fetch time (s); for prediction
   char hex[7];       // ICAO 24-bit address (stable id across updates)
   char callsign[9];
   char type[5];

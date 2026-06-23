@@ -268,7 +268,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   for (const char* key :
        {"lat", "lon", "true_heading", "mag_heading", "track", "dir", "gs",
         "tas", "ias", "flight", "hex", "t", "alt_baro", "alt_geom",
-        "category"}) {
+        "category", "seen_pos"}) {
     f[key] = true;
   }
 
@@ -304,6 +304,11 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_aircraft[n].nose_deg = pickNoseHeading(plane);
     s_aircraft[n].track_deg = pickTrackHeading(plane);
     s_aircraft[n].gs_knots = pickGroundSpeed(plane);
+    // Age of this position fix (s). The feed reports positions already a few
+    // seconds stale; carrying this lets the display dead-reckon from the fix's
+    // real measurement time so successive predictions line up (no snap-back).
+    s_aircraft[n].seen_pos_s =
+        plane["seen_pos"].is<float>() ? plane["seen_pos"].as<float>() : 0.0f;
     s_aircraft[n].is_helicopter = isRotorcraft(plane);
     fillTagFields(&s_aircraft[n], plane);
     ++n;

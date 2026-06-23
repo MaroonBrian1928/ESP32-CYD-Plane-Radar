@@ -13,7 +13,7 @@ namespace ui::radar {
  *   2 mi — default; neighborhood spotting
  *   3 mi — wider local area
  *   5 mi — metro / regional picture
- *  50 mi — wide-area (catch distant traffic)
+ *  10 mi — wider regional picture
  *
  * The preset value is the OUTER ring (max range) — a plane at the rim is ~that
  * far away. The four rings fall at ¼ / ½ / ¾ / 1 of it. Stored in km; the label
@@ -33,7 +33,7 @@ constexpr RangePreset kRangePresets[] = {
     {2.0f * kKmPerMile, 2.0f * kKmPerMile},
     {3.0f * kKmPerMile, 3.0f * kKmPerMile},
     {5.0f * kKmPerMile, 5.0f * kKmPerMile},
-    {50.0f * kKmPerMile, 50.0f * kKmPerMile},
+    {10.0f * kKmPerMile, 10.0f * kKmPerMile},
 };
 
 constexpr size_t kRangePresetCount =
@@ -50,9 +50,11 @@ float fetchRadiusKm();
 
 bool useMiles();
 bool showRunways();
+bool showTrails();
 /** WiFi portal checkbox: "T" = miles, otherwise km. */
 void saveMilesFromPortal(const char* checkbox_value);
 void saveRunwaysFromPortal(const char* checkbox_value);
+void saveTrailsFromPortal(const char* checkbox_value);
 void formatRing3Label(char* buf, size_t len, float ring3_km, bool use_miles);
 void formatCurrentRing3Label(char* buf, size_t len);
 /** Reset distance units to km (e.g. with WiFi credential wipe). */

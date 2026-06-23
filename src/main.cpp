@@ -9,6 +9,7 @@
 #include "hardware/display.h"
 #include "services/adsb_client.h"
 #include "services/radar_location.h"
+#include "services/timezone.h"
 #include "services/wifi_setup.h"
 #include "ui/radar_display.h"
 #include "ui/radar_range.h"
@@ -21,6 +22,28 @@ unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
 unsigned long g_last_adsb_fetch_ms = 0;
 unsigned long g_last_anim_ms = 0;
+unsigned long g_last_tz_ms = 0;
+
+/** Re-derive the timezone offset periodically (catches DST + location edits). */
+constexpr unsigned long kTzRefreshMs = 12UL * 60 * 60 * 1000;  // 12 h
+
+// Set the clock's timezone from the radar coordinates (timeapi.io), falling
+// back to the static kTimezone if the lookup fails. NTP keeps the time synced.
+void applyTimezone() {
+  long offset_sec = 0;
+  if (services::timezone::fetchUtcOffsetSeconds(services::location::lat(),
+                                                services::location::lon(),
+                                                &offset_sec)) {
+    configTime(offset_sec, 0, config::kNtpServer1, config::kNtpServer2);
+    Serial.printf("Timezone: auto from %.4f,%.4f (UTC%+ld:%02ld)\n",
+                  services::location::lat(), services::location::lon(),
+                  offset_sec / 3600, (offset_sec < 0 ? -offset_sec : offset_sec) % 3600 / 60);
+  } else {
+    configTzTime(config::kTimezone, config::kNtpServer1, config::kNtpServer2);
+    Serial.println("Timezone: auto lookup failed — using config kTimezone");
+  }
+  g_last_tz_ms = millis();
+}
 
 void showRadarIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -82,7 +105,8 @@ void setup() {
   services::adsb::setPollFn(wifiLoop);
 
   if (wifiSetupConnect()) {
-    showRadarIfConnected();
+    showRadarIfConnected();   // draw the radar first
+    applyTimezone();          // then derive TZ from coords + start NTP
   }
 }
 
@@ -123,6 +147,10 @@ void loop() {
       // instead of snapping on each fetch.
       g_last_anim_ms = millis();
       ui::radarDisplayRefreshAircraft();
+    }
+
+    if (millis() - g_last_tz_ms >= kTzRefreshMs) {
+      applyTimezone();  // refresh offset (DST changeover / edited location)
     }
   }
 
