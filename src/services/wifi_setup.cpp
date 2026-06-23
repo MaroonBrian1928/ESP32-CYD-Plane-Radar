@@ -104,6 +104,12 @@ char s_trails_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_trails("show_trails", "Show flight trails", "T", 2,
                                     s_trails_checkbox_attrs, WFM_LABEL_AFTER);
 
+char s_autozoom_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_autozoom("auto_zoom",
+                                      "Auto zoom (tour to closest detail)", "T",
+                                      2, s_autozoom_checkbox_attrs,
+                                      WFM_LABEL_AFTER);
+
 void refreshPortalParamDefaults() {
   char lat_buf[kCoordParamLen + 1];
   char lon_buf[kCoordParamLen + 1];
@@ -120,6 +126,9 @@ void refreshPortalParamDefaults() {
   snprintf(s_trails_checkbox_attrs, sizeof(s_trails_checkbox_attrs),
            "type=\"checkbox\"%s", ui::radar::showTrails() ? " checked" : "");
   s_param_trails.setValue("T", 2);
+  snprintf(s_autozoom_checkbox_attrs, sizeof(s_autozoom_checkbox_attrs),
+           "type=\"checkbox\"%s", ui::radar::autoZoom() ? " checked" : "");
+  s_param_autozoom.setValue("T", 2);
 }
 
 void onPortalParamsSaved() {
@@ -130,6 +139,7 @@ void onPortalParamsSaved() {
   ui::radar::saveMilesFromPortal(s_param_miles.getValue());
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   ui::radar::saveTrailsFromPortal(s_param_trails.getValue());
+  ui::radar::saveAutoZoomFromPortal(s_param_autozoom.getValue());
 }
 
 void attachPortalParams(WiFiManager& wm) {
@@ -139,6 +149,7 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_miles);
   wm.addParameter(&s_param_runways);
   wm.addParameter(&s_param_trails);
+  wm.addParameter(&s_param_autozoom);
   wm.setSaveParamsCallback(onPortalParamsSaved);
 }
 

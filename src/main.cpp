@@ -11,6 +11,7 @@
 #include "services/radar_location.h"
 #include "services/timezone.h"
 #include "services/wifi_setup.h"
+#include "ui/radar_autozoom.h"
 #include "ui/radar_display.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
@@ -51,10 +52,16 @@ void showRadarIfConnected() {
     return;
   }
   ui::radarDisplayDraw();
+  ui::radar::autoZoomReset();  // start the tour from the widest level
   g_radar_visible = true;
 }
 
 void onRangeTap() {
+  // Auto-zoom owns the range while it's on, so ignore manual range cycling
+  // (change it from the setup page). BOOT long-press to reset still works.
+  if (ui::radar::autoZoom()) {
+    return;
+  }
   ui::radar::rangeNext();
   char range_label[12];
   ui::radar::formatCurrentRing3Label(range_label, sizeof(range_label));
@@ -147,6 +154,13 @@ void loop() {
       // instead of snapping on each fetch.
       g_last_anim_ms = millis();
       ui::radarDisplayRefreshAircraft();
+    }
+
+    // Auto-zoom tour: steps the range toward the closest-detail view with a
+    // plane (self-throttled). Redraw right away when it changes the zoom.
+    if (ui::radar::autoZoomTick()) {
+      ui::radarDisplayDraw();
+      g_last_anim_ms = millis();
     }
 
     if (millis() - g_last_tz_ms >= kTzRefreshMs) {
